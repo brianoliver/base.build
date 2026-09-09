@@ -14,6 +14,7 @@ import build.base.transport.json.example.Country;
 import build.base.transport.json.example.Expense;
 import build.base.transport.json.example.ExpenseLine;
 import build.base.transport.json.example.MultipleUnmarshalls;
+import build.base.transport.json.example.NativeTypes;
 import build.base.transport.json.example.Person;
 import build.base.transport.json.example.PersonWithFirstName;
 import build.base.transport.json.example.PersonWithOptionalLastName;
@@ -411,6 +412,55 @@ public class JsonTransportTests {
             .isNotSameAs(unmarshalled);
 
         assertThat(address)
+            .isEqualTo(unmarshalled);
+    }
+
+    /**
+     * Ensure a {@link Marshal}lable {@link Object} containing {@code short}, {@link java.time} and
+     * {@link java.util.UUID} values (including {@code null}s) can be transported.
+     */
+    @Test
+    void shouldWriteAndReadClassWithNativeTypes() {
+
+        final var original = new NativeTypes();
+
+        final var marshaller = Marshalling.newMarshaller();
+        final var marshalled = marshaller.marshal(original);
+
+        final var transport = new JsonTransport();
+        final var writer = new StringWriter();
+
+        transport.write(marshalled, writer);
+
+        assertThat(writer.toString())
+            .contains("\"aShort\":-32768")
+            .contains("\"aShortWrapper\":32767")
+            .contains("\"aNullShortWrapper\":null")
+            .contains("\"anOffsetDateTime\":\"2026-09-09T14:31:07+02:00\"")
+            .contains("\"anOffsetTime\":\"14:31:07-05:00\"")
+            .contains("\"aYear\":\"2026\"")
+            .contains("\"aYearMonth\":\"2026-09\"")
+            .contains("\"aMonthDay\":\"--09-09\"")
+            .contains("\"aZoneId\":\"Europe/Berlin\"")
+            .contains("\"aZoneOffset\":\"+05:30\"")
+            .contains("\"aUuid\":\"f81d4fae-7dec-11d0-a765-00a0c91e6bf6\"")
+            .contains("\"aNullOffsetDateTime\":null")
+            .contains("\"aNullOffsetTime\":null")
+            .contains("\"aNullYear\":null")
+            .contains("\"aNullYearMonth\":null")
+            .contains("\"aNullMonthDay\":null")
+            .contains("\"aNullZoneId\":null")
+            .contains("\"aNullZoneOffset\":null")
+            .contains("\"aNullUuid\":null");
+
+        final Marshalled<NativeTypes> transported = transport.read(new StringReader(writer.toString()));
+
+        final var unmarshalled = marshaller.unmarshal(transported);
+
+        assertThat(original)
+            .isNotSameAs(unmarshalled);
+
+        assertThat(original)
             .isEqualTo(unmarshalled);
     }
 

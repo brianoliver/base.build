@@ -53,10 +53,19 @@ import build.base.transport.json.codec.LocalDateCodec;
 import build.base.transport.json.codec.LocalDateTimeCodec;
 import build.base.transport.json.codec.LocalTimeCodec;
 import build.base.transport.json.codec.LongCodec;
+import build.base.transport.json.codec.MonthDayCodec;
+import build.base.transport.json.codec.OffsetDateTimeCodec;
+import build.base.transport.json.codec.OffsetTimeCodec;
 import build.base.transport.json.codec.OptionalCodec;
 import build.base.transport.json.codec.PeriodCodec;
+import build.base.transport.json.codec.ShortCodec;
 import build.base.transport.json.codec.StreamableCodec;
 import build.base.transport.json.codec.StringCodec;
+import build.base.transport.json.codec.UUIDCodec;
+import build.base.transport.json.codec.YearCodec;
+import build.base.transport.json.codec.YearMonthCodec;
+import build.base.transport.json.codec.ZoneIdCodec;
+import build.base.transport.json.codec.ZoneOffsetCodec;
 import build.base.transport.json.codec.ZonedDateTimeCodec;
 
 import java.io.IOException;
@@ -107,6 +116,7 @@ public class JsonTransport
         register(new BooleanCodec());
         register(new LongCodec());
         register(new ByteCodec());
+        register(new ShortCodec());
         register(new FloatCodec());
         register(new DoubleCodec());
         register(new CharacterCodec());
@@ -117,9 +127,17 @@ public class JsonTransport
         register(new LocalTimeCodec());
         register(new LocalDateTimeCodec());
         register(new ZonedDateTimeCodec());
+        register(new OffsetDateTimeCodec());
+        register(new OffsetTimeCodec());
+        register(new YearCodec());
+        register(new YearMonthCodec());
+        register(new MonthDayCodec());
+        register(new ZoneIdCodec());
+        register(new ZoneOffsetCodec());
         register(new DurationCodec());
         register(new PeriodCodec());
         register(new DateCodec());
+        register(new UUIDCodec());
     }
 
     /**
