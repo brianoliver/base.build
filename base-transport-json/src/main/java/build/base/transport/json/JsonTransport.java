@@ -49,6 +49,7 @@ import build.base.transport.json.codec.DurationCodec;
 import build.base.transport.json.codec.FloatCodec;
 import build.base.transport.json.codec.InstantCodec;
 import build.base.transport.json.codec.IntegerCodec;
+import build.base.transport.json.codec.LazyCodec;
 import build.base.transport.json.codec.LocalDateCodec;
 import build.base.transport.json.codec.LocalDateTimeCodec;
 import build.base.transport.json.codec.LocalTimeCodec;
@@ -113,6 +114,7 @@ public class JsonTransport
         register(new StringCodec());
         register(new OptionalCodec());
         register(new StreamableCodec());
+        register(new LazyCodec<>());
         register(new IntegerCodec());
         register(new BooleanCodec());
         register(new LongCodec());
