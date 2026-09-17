@@ -30,6 +30,7 @@ import build.base.marshalling.Parameter;
 import build.base.transport.json.ConditionalCodec;
 import build.base.transport.json.JsonTransport;
 
+import java.lang.reflect.Type;
 import java.util.ArrayList;
 
 /**
@@ -59,13 +60,14 @@ public class StreamableCodec<T>
     @Override
     public JsonValue encode(final JsonTransport transport,
                             final Parameter parameter,
+                            final Type type,
                             final Streamable<T> streamable,
                             final Marshaller marshaller) {
 
         if (streamable == null) {
             return JsonNull.INSTANCE;
         }
-        final var elementType = Introspection.getParameterType(parameter.type())
+        final var elementType = Introspection.getParameterType(type)
             .orElseThrow(() -> new IllegalStateException(
                 "Failed to determine Streamable<T> element type for [" + parameter.name() + "]"));
         final var elements = new ArrayList<JsonValue>();
@@ -81,19 +83,19 @@ public class StreamableCodec<T>
     @SuppressWarnings("unchecked")
     public Streamable<T> decode(final JsonTransport transport,
                                 final Parameter parameter,
+                                final Type type,
                                 final JsonValue value,
                                 final Marshaller marshaller) {
 
         if (value instanceof JsonNull) {
             return defaultValue();
         }
-        final var elementType = Introspection.getParameterType(parameter.type())
+        final var elementType = Introspection.getParameterType(type)
             .orElseThrow(() -> new IllegalStateException(
                 "Failed to determine Streamable<T> element type for [" + parameter.name() + "]"));
-        final var elementClass = Introspection.getClassFromType(elementType).orElseThrow();
         final var elements = new ArrayList<T>();
         for (final var element : value.asArray().values()) {
-            elements.add((T) transport.decode(parameter, elementClass, element, marshaller));
+            elements.add((T) transport.decode(parameter, elementType, element, marshaller));
         }
         return Streamable.of(elements);
     }
