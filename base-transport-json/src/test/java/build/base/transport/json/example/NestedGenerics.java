@@ -20,6 +20,7 @@ package build.base.transport.json.example;
  * #L%
  */
 
+import build.base.foundation.Lazy;
 import build.base.marshalling.Marshal;
 import build.base.marshalling.Marshalling;
 import build.base.marshalling.Out;
@@ -33,14 +34,15 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /**
- * Exercises a value nested two generic levels deep - {@code Optional<Stream<Integer>>} and
+ * Exercises a value nested three generic levels deep - {@code Optional<Stream<Lazy<Integer>>>} and
  * {@code Stream<Optional<String>>} - where each level is handled by a distinct {@code Codec}
- * ({@code OptionalCodec}/{@code StreamableCodec}) rather than a single one. A {@code Codec} that re-derives
- * its own operand type from the constructor parameter's declared type, instead of the local type it was
- * actually invoked with, resolves the wrong type past the first level of nesting. {@code numbers} also
- * exercises the {@code Stream}-to-{@code Streamable} {@code Transformer} hop nested inside an {@code Optional},
- * which has the same failure mode if the {@code Transformer}'s target type isn't reparameterized with the
- * original type argument.
+ * ({@code OptionalCodec}/{@code StreamableCodec}/{@code LazyCodec}) rather than a single one. A {@code Codec}
+ * that re-derives its own operand type from the constructor parameter's declared type, instead of the local
+ * type it was actually invoked with, resolves the wrong type past the first level of nesting. {@code numbers}
+ * also exercises the {@code Stream}-to-{@code Streamable} {@code Transformer} hop nested inside an
+ * {@code Optional}, which has the same failure mode if the {@code Transformer}'s target type isn't
+ * reparameterized with the original type argument - and, past that hop, a further {@code Codec}-to-{@code Codec}
+ * nesting ({@code StreamableCodec} to {@code LazyCodec}) to reach the innermost {@code Integer}.
  */
 public class NestedGenerics {
 
@@ -53,14 +55,15 @@ public class NestedGenerics {
     }
 
     @Unmarshal
-    public NestedGenerics(final Optional<Stream<Integer>> numbers, final Stream<Optional<String>> names) {
-        this.numbers = numbers.map(stream -> stream.collect(Collectors.toList()));
+    public NestedGenerics(final Optional<Stream<Lazy<Integer>>> numbers, final Stream<Optional<String>> names) {
+        this.numbers = numbers.map(stream -> stream.map(Lazy::get).collect(Collectors.toList()));
         this.names = names.collect(Collectors.toList());
     }
 
     @Marshal
-    public void destructor(final Out<Optional<Stream<Integer>>> numbers, final Out<Stream<Optional<String>>> names) {
-        numbers.set(this.numbers.map(List::stream));
+    public void destructor(final Out<Optional<Stream<Lazy<Integer>>>> numbers,
+                           final Out<Stream<Optional<String>>> names) {
+        numbers.set(this.numbers.map(list -> list.stream().map(Lazy::of)));
         names.set(this.names.stream());
     }
 

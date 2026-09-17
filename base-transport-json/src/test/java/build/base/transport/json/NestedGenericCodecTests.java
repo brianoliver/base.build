@@ -24,6 +24,7 @@ import build.base.marshalling.Marshalled;
 import build.base.marshalling.Marshalling;
 import build.base.marshalling.Parameter;
 import build.base.transport.Transformer;
+import build.base.transport.json.codec.LazyCodec;
 import build.base.transport.json.codec.OptionalCodec;
 import build.base.transport.json.codec.StreamableCodec;
 import build.base.transport.json.example.NestedGenerics;
@@ -38,25 +39,27 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Covers a {@link Codec} being invoked on a type nested two generic levels deep, e.g. the {@code Integer} of
- * {@code Optional<Stream<Integer>>}. Each {@link Codec} only receives {@link Parameter}, not the local
+ * Covers a {@link Codec} being invoked on a type nested three generic levels deep, e.g. the {@code Integer} of
+ * {@code Optional<Stream<Lazy<Integer>>>}. Each {@link Codec} only receives {@link Parameter}, not the local
  * {@link java.lang.reflect.Type} it's being invoked with, so a {@link Codec} that (incorrectly) re-derives its
  * own operand type from {@code Parameter.type()} - instead of the {@link java.lang.reflect.Type} it was
  * actually invoked with - gets the wrong answer past the first level of nesting: it would resolve
- * {@code Stream<Integer>} where it should resolve {@code Integer}.
+ * {@code Stream<Lazy<Integer>>} or {@code Lazy<Integer>} where it should resolve {@code Lazy<Integer>} or
+ * {@code Integer} respectively.
  *
  * @see NestedGenerics
  */
 class NestedGenericCodecTests {
 
     /**
-     * {@code Optional<Stream<Integer>>}: {@link OptionalCodec} wraps a value whose own type needs a
+     * {@code Optional<Stream<Lazy<Integer>>>}: {@link OptionalCodec} wraps a value whose own type needs a
      * {@code Stream}-to-{@code Streamable} {@link Transformer} hop before {@link StreamableCodec} can handle
-     * it - exercising both the {@code Codec}-to-{@code Codec} nesting and the {@link Transformer} target-type
-     * reparameterization ({@code JsonTransport.retarget}) in the same field.
+     * it, which in turn wraps elements handled by {@link LazyCodec} - exercising the {@code Codec}-to-{@code
+     * Codec}-to-{@code Codec} nesting and the {@link Transformer} target-type reparameterization
+     * ({@code JsonTransport.retarget}) in the same field.
      */
     @Test
-    void shouldRoundTripPresentOptionalOfStreamOfIntegers() {
+    void shouldRoundTripPresentOptionalOfStreamOfLazyIntegers() {
 
         final var nested = new NestedGenerics(Optional.of(List.of(1, 2, 3)), List.of());
 
@@ -70,7 +73,7 @@ class NestedGenericCodecTests {
      * {@code defaultValue} path is unaffected by the deeper fix.
      */
     @Test
-    void shouldRoundTripEmptyOptionalOfStreamOfIntegers() {
+    void shouldRoundTripEmptyOptionalOfStreamOfLazyIntegers() {
 
         final var nested = new NestedGenerics(Optional.empty(), List.of());
 
