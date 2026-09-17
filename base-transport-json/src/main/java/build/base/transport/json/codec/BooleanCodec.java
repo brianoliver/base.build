@@ -28,6 +28,8 @@ import build.base.marshalling.Parameter;
 import build.base.transport.json.Codec;
 import build.base.transport.json.JsonTransport;
 
+import java.lang.reflect.Type;
+
 /**
  * A {@link Codec} for {@link Boolean} values.
  *
@@ -45,6 +47,7 @@ public class BooleanCodec
     @Override
     public JsonValue encode(final JsonTransport transport,
                             final Parameter parameter,
+                            final Type type,
                             final Boolean value,
                             final Marshaller marshaller) {
 
@@ -54,6 +57,7 @@ public class BooleanCodec
     @Override
     public Boolean decode(final JsonTransport transport,
                           final Parameter parameter,
+                          final Type type,
                           final JsonValue value,
                           final Marshaller marshaller) {
 

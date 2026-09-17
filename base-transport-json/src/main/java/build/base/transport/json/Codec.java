@@ -24,6 +24,8 @@ import build.base.json.JsonValue;
 import build.base.marshalling.Marshaller;
 import build.base.marshalling.Parameter;
 
+import java.lang.reflect.Type;
+
 /**
  * A JSON <a href="https://en.wikipedia.org/wiki/Codec">Codec</a> for a specific type of value.
  *
@@ -45,12 +47,18 @@ public interface Codec<T> {
      *
      * @param transport  the {@link JsonTransport}
      * @param parameter  the {@link Parameter}
+     * @param type       the actual {@link Type} being encoded at this point - the {@link Codec}'s own operand
+     *                   type, which may be nested inside {@code parameter}'s declared type (e.g. the {@code T}
+     *                   of an {@code Optional<T>} or {@code Stream<T>} a {@link Codec} for {@code T} is invoked
+     *                   from within) - use this, not {@code parameter.type()}, to derive any further nested
+     *                   type arguments this {@link Codec} needs
      * @param value      the value to encode
      * @param marshaller the {@link Marshaller}
      * @return the encoded {@link JsonValue}
      */
     JsonValue encode(JsonTransport transport,
                      Parameter parameter,
+                     Type type,
                      T value,
                      Marshaller marshaller);
 
@@ -59,12 +67,16 @@ public interface Codec<T> {
      *
      * @param transport  the {@link JsonTransport}
      * @param parameter  the {@link Parameter}
+     * @param type       the actual {@link Type} being decoded at this point - see {@link #encode} for why this,
+     *                   not {@code parameter.type()}, is what a {@link Codec} needing a nested type argument
+     *                   should derive it from
      * @param value      the {@link JsonValue} to decode (never absent; may be {@link build.base.json.JsonNull})
      * @param marshaller the {@link Marshaller}
      * @return the decoded value
      */
     T decode(JsonTransport transport,
              Parameter parameter,
+             Type type,
              JsonValue value,
              Marshaller marshaller);
 }

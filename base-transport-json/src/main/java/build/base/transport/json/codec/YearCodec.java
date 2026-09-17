@@ -28,6 +28,7 @@ import build.base.marshalling.Parameter;
 import build.base.transport.json.Codec;
 import build.base.transport.json.JsonTransport;
 
+import java.lang.reflect.Type;
 import java.time.Year;
 
 /**
@@ -47,6 +48,7 @@ public class YearCodec
     @Override
     public JsonValue encode(final JsonTransport transport,
                             final Parameter parameter,
+                            final Type type,
                             final Year value,
                             final Marshaller marshaller) {
 
@@ -56,6 +58,7 @@ public class YearCodec
     @Override
     public Year decode(final JsonTransport transport,
                        final Parameter parameter,
+                       final Type type,
                        final JsonValue value,
                        final Marshaller marshaller) {
 

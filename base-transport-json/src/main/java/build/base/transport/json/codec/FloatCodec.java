@@ -28,6 +28,8 @@ import build.base.marshalling.Parameter;
 import build.base.transport.json.Codec;
 import build.base.transport.json.JsonTransport;
 
+import java.lang.reflect.Type;
+
 /**
  * A {@link Codec} for {@link Float} values.
  *
@@ -45,6 +47,7 @@ public class FloatCodec
     @Override
     public JsonValue encode(final JsonTransport transport,
                             final Parameter parameter,
+                            final Type type,
                             final Float value,
                             final Marshaller marshaller) {
 
@@ -54,6 +57,7 @@ public class FloatCodec
     @Override
     public Float decode(final JsonTransport transport,
                         final Parameter parameter,
+                        final Type type,
                         final JsonValue value,
                         final Marshaller marshaller) {
 

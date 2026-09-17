@@ -29,6 +29,7 @@ import build.base.marshalling.Parameter;
 import build.base.transport.json.ConditionalCodec;
 import build.base.transport.json.JsonTransport;
 
+import java.lang.reflect.Type;
 import java.util.List;
 import java.util.Optional;
 
@@ -61,6 +62,7 @@ public class OptionalCodec
     @Override
     public JsonValue encode(final JsonTransport transport,
                             final Parameter parameter,
+                            final Type type,
                             final Optional<?> optional,
                             final Marshaller marshaller) {
 
@@ -70,7 +72,7 @@ public class OptionalCodec
         if (optional.isEmpty()) {
             return JsonArray.of(List.of());
         }
-        final var elementType = Introspection.getParameterType(parameter.type())
+        final var elementType = Introspection.getParameterType(type)
             .orElseThrow(() -> new IllegalStateException(
                 "Failed to determine Optional<T> element type for [" + parameter.name() + "]"));
         return JsonArray.of(List.of(transport.encode(parameter, elementType, optional.get(), marshaller)));
@@ -79,6 +81,7 @@ public class OptionalCodec
     @Override
     public Optional<?> decode(final JsonTransport transport,
                               final Parameter parameter,
+                              final Type type,
                               final JsonValue value,
                               final Marshaller marshaller) {
 
@@ -89,10 +92,9 @@ public class OptionalCodec
         if (array.values().isEmpty()) {
             return Optional.empty();
         }
-        final var elementType = Introspection.getParameterType(parameter.type())
+        final var elementType = Introspection.getParameterType(type)
             .orElseThrow(() -> new IllegalStateException(
                 "Failed to determine Optional<T> element type for [" + parameter.name() + "]"));
-        final var elementClass = Introspection.getClassFromType(elementType).orElse(Object.class);
-        return Optional.ofNullable(transport.decode(parameter, elementClass, array.element(0), marshaller));
+        return Optional.ofNullable(transport.decode(parameter, elementType, array.element(0), marshaller));
     }
 }

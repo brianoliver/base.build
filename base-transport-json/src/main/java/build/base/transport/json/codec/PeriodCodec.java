@@ -28,6 +28,7 @@ import build.base.marshalling.Parameter;
 import build.base.transport.json.Codec;
 import build.base.transport.json.JsonTransport;
 
+import java.lang.reflect.Type;
 import java.time.Period;
 
 /**
@@ -44,6 +45,7 @@ public class PeriodCodec
     @Override
     public JsonValue encode(final JsonTransport transport,
                             final Parameter parameter,
+                            final Type type,
                             final Period value,
                             final Marshaller marshaller) {
 
@@ -53,6 +55,7 @@ public class PeriodCodec
     @Override
     public Period decode(final JsonTransport transport,
                         final Parameter parameter,
+                        final Type type,
                         final JsonValue value,
                         final Marshaller marshaller) {
 

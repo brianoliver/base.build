@@ -73,6 +73,7 @@ import java.io.Reader;
 import java.io.UncheckedIOException;
 import java.io.Writer;
 import java.lang.reflect.Modifier;
+import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -174,6 +175,40 @@ public class JsonTransport
     }
 
     /**
+     * Substitutes {@code targetClass} for {@code originalType}'s raw type, preserving {@code originalType}'s own
+     * type arguments if it has any. Used when a {@link Transformer} swaps one {@link Class} for another (e.g.
+     * {@code Stream} for {@code Streamable}) - {@link Transformer#targetClass()} only offers a raw {@link Class},
+     * which would otherwise erase any type argument (e.g. the {@code X} of {@code Stream<X>}) the original
+     * {@link Type} carried, exactly the same erasure a {@link Codec} would suffer without this.
+     *
+     * @param originalType the {@link Type} being transformed
+     * @param targetClass  the {@link Transformer}'s target {@link Class}
+     * @return {@code targetClass}, reparameterized with {@code originalType}'s type arguments if it had any
+     */
+    private static Type retarget(final Type originalType, final Class<?> targetClass) {
+        if (!(originalType instanceof ParameterizedType parameterizedType)) {
+            return targetClass;
+        }
+        final var typeArguments = parameterizedType.getActualTypeArguments();
+        return new ParameterizedType() {
+            @Override
+            public Type[] getActualTypeArguments() {
+                return typeArguments;
+            }
+
+            @Override
+            public Type getRawType() {
+                return targetClass;
+            }
+
+            @Override
+            public Type getOwnerType() {
+                return null;
+            }
+        };
+    }
+
+    /**
      * Encodes a {@link Marshalled} object as a {@link JsonObject} and writes it to the provided {@link Writer}.
      *
      * @param marshalled the {@link Marshalled} object
@@ -252,12 +287,12 @@ public class JsonTransport
                 throw new IllegalStateException("Transformer produced no change for parameter ["
                     + parameter.name() + "] of type [" + valueClass + "]");
             }
-            return encode(parameter, transformer.targetClass(), transformed, marshaller);
+            return encode(parameter, retarget(valueType, transformer.targetClass()), transformed, marshaller);
         }
 
         final var optionalCodec = getCodec(valueType);
         if (optionalCodec.isPresent()) {
-            return optionalCodec.orElseThrow().encode(this, parameter, value, marshaller);
+            return optionalCodec.orElseThrow().encode(this, parameter, valueType, value, marshaller);
         }
 
         if (this.schemaFactory.isMarshallable(valueClass)) {
@@ -300,7 +335,7 @@ public class JsonTransport
         final var optionalTransformer = getTransformer(type);
         if (optionalTransformer.isPresent()) {
             final var transformer = optionalTransformer.orElseThrow();
-            final var read = decode(parameter, transformer.targetClass(), value, marshaller);
+            final var read = decode(parameter, retarget(type, transformer.targetClass()), value, marshaller);
             final var reformed = transformer.reform(marshaller, type, read);
             if (Objects.equals(reformed, read)) {
                 throw new IllegalStateException("Transformer reform produced no change for parameter ["
@@ -315,7 +350,7 @@ public class JsonTransport
 
         final var optionalCodec = getCodec(type);
         if (optionalCodec.isPresent()) {
-            return (T) optionalCodec.orElseThrow().decode(this, parameter, value, marshaller);
+            return (T) optionalCodec.orElseThrow().decode(this, parameter, type, value, marshaller);
         }
 
         if (Marshalled.class.isAssignableFrom(readableClass)) {
