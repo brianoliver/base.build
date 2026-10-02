@@ -22,6 +22,8 @@ package build.base.marshalling;
 
 import build.base.foundation.stream.Streamable;
 
+import java.util.Optional;
+
 /**
  * Provides access to information concerning and including the values of an {@link Object} that has been
  * <a href="https://en.wikipedia.org/wiki/Marshalling_(computer_science)">Marshalled</a>.
@@ -51,4 +53,29 @@ public interface Marshalled<T> {
      * @return a {@link Streamable} of {@link Object} values
      */
     Streamable<Object> values();
+
+    /**
+     * Obtains the identity assigned to {@code this} {@link Marshalled}, if it was reached more than once while
+     * marshalling (directly, or transitively via a shared or cyclic reference) and therefore needs to be
+     * referenceable by {@link #reference()} elsewhere.
+     * <p>
+     * Absent for the vast majority of {@link Marshalled}s, which are only ever reached once.
+     *
+     * @return the {@link Optional} identity, otherwise {@link Optional#empty()}
+     */
+    default Optional<Integer> id() {
+        return Optional.empty();
+    }
+
+    /**
+     * If present, indicates {@code this} {@link Marshalled} is a back-reference to a previously-unmarshalled
+     * {@link Object} (identified by the returned identity, as {@link #id()} would have reported it) rather
+     * than a fresh description to construct from. {@link #schema()} and {@link #values()} are not supported
+     * when this is present.
+     *
+     * @return the {@link Optional} identity being referenced, otherwise {@link Optional#empty()}
+     */
+    default Optional<Integer> reference() {
+        return Optional.empty();
+    }
 }
