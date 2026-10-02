@@ -22,6 +22,7 @@ package build.base.marshalling;
 
 import build.base.foundation.Arrays;
 import build.base.foundation.Introspection;
+import build.base.foundation.Lazy;
 import build.base.foundation.Preconditions;
 import build.base.foundation.stream.Streamable;
 import build.base.foundation.stream.Streams;
@@ -34,14 +35,20 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.LinkedList;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -664,9 +671,18 @@ public class ConcurrentSchemaFactory
                     .orElseThrow(() -> new IllegalArgumentException("Unsatisfied dependency [" + dependency.name() + "]"
                         + " for marshalled [" + marshalled.schema().owner().getName() + "]")));
 
-            // include the parameter values (as arguments)
-            marshalled.values().stream()
-                .forEach(value -> arguments[index.getAndIncrement()] = value);
+            // include the parameter values (as arguments) - a parameter declared as Lazy<X> is willing to
+            // receive its value once it becomes available rather than up front, so a value that has only
+            // been decoded as far as a not-yet-unmarshalled Marshalled<X> (see JsonTransport's handling of
+            // a Lazy<T> parameter) is wrapped to defer that unmarshal() until first access, using this
+            // unmarshal() call's own Marshaller - the one actually doing the constructing - rather than
+            // whichever Marshaller originally decoded the value. This is what allows a genuine cycle to be
+            // reconstructed: by the time something calls Lazy.get(), the object this Lazy participates in -
+            // including, for a self-reference, the very object under construction here - has finished
+            // constructing and is resolvable.
+            Streams.zip(this.parameters.values().stream(), marshalled.values().stream())
+                .forEach(pair -> arguments[index.getAndIncrement()] =
+                    deferLazyValue(pair.first().type(), pair.second(), marshaller));
 
             try {
                 // invoke the constructor to perform unmarshalling
@@ -674,6 +690,53 @@ public class ConcurrentSchemaFactory
             } catch (final IllegalAccessException | InstantiationException | InvocationTargetException e) {
                 throw new RuntimeException("Failed to unmarshal " + marshalled.schema().owner().getCanonicalName(), e);
             }
+        }
+
+        /**
+         * Defers unmarshalling a value destined for a {@link Lazy}-typed constructor parameter - {@code Lazy<X>}
+         * directly, or nested one level inside {@code Optional<Lazy<X>>}, {@code Stream<Lazy<X>>}, or
+         * {@code Streamable<Lazy<X>>} - so a not-yet-unmarshalled {@link Marshalled} value is wrapped in a
+         * {@link Lazy} that unmarshal()s it (using {@code marshaller}) on first access, rather than now. Any
+         * other parameter shape is passed through unchanged.
+         *
+         * @param parameterType the constructor parameter's declared {@link Type}
+         * @param value         the value decoded for it
+         * @param marshaller    the {@link Marshaller} to use once the {@link Lazy} is eventually resolved
+         * @return the value to use as the constructor argument
+         */
+        private static Object deferLazyValue(final Type parameterType,
+                                             final Object value,
+                                             final Marshaller marshaller) {
+
+            final var parameterClass = Introspection.getClassFromType(parameterType).orElse(null);
+
+            if (Lazy.class.equals(parameterClass) && value instanceof Marshalled<?> nestedMarshalled) {
+                return Lazy.of(() -> marshaller.unmarshal(nestedMarshalled));
+            }
+
+            if (Optional.class.equals(parameterClass) && value instanceof Optional<?> optionalValue) {
+                final var elementType = Introspection.getParameterType(parameterType).orElse(null);
+                if (elementType != null) {
+                    return optionalValue.map(element -> deferLazyValue(elementType, element, marshaller));
+                }
+            }
+
+            if (Stream.class.equals(parameterClass) && value instanceof Stream<?> streamValue) {
+                final var elementType = Introspection.getParameterType(parameterType).orElse(null);
+                if (elementType != null) {
+                    return streamValue.map(element -> deferLazyValue(elementType, element, marshaller));
+                }
+            }
+
+            if (Streamable.class.equals(parameterClass) && value instanceof Streamable<?> streamableValue) {
+                final var elementType = Introspection.getParameterType(parameterType).orElse(null);
+                if (elementType != null) {
+                    return Streamable.of(streamableValue.stream()
+                        .map(element -> deferLazyValue(elementType, element, marshaller)));
+                }
+            }
+
+            return value;
         }
     }
 
@@ -695,6 +758,48 @@ public class ConcurrentSchemaFactory
         private final ConcurrentHashMap<Type, Binding<?>> bindings;
 
         /**
+         * The identity {@link Set} of {@link Object}s currently being marshalled (i.e. still on the call stack)
+         * by {@code this} {@link HierarchicalMarshaller}. Used to detect a genuine cycle - an {@link Object}
+         * that is its own ancestor - which is reported via {@link CyclicMarshallingException}.
+         */
+        private final Set<Object> inProgress;
+
+        /**
+         * The identity {@link Map} of {@link Object}s already marshalled by {@code this}
+         * {@link HierarchicalMarshaller} to their {@link Marshalled} representation. Ensures an {@link Object}
+         * reached more than once (whether or not it is genuinely cyclic) is only ever destructed once, and is
+         * represented by the same {@link Marshalled} instance every time thereafter.
+         */
+        private final Map<Object, Marshalled<?>> completed;
+
+        /**
+         * The identity assigned to each already-unmarshalled {@link Object}, by the identity carried on the
+         * {@link Marshalled} it was unmarshalled from - only ever populated and consulted on the root
+         * {@link HierarchicalMarshaller} (see {@link #root()}), since {@link #newMarshaller()} otherwise creates
+         * a fresh child for every nested unmarshal.
+         */
+        private final Map<Integer, Object> unmarshalledById;
+
+        /**
+         * Guards {@link #inProgress}, {@link #completed}, and (on the root {@link HierarchicalMarshaller} only -
+         * see {@link #root()}) {@link #unmarshalledById}, none of which are otherwise safe for concurrent access.
+         * <p>
+         * A {@link HierarchicalMarshaller} is ordinarily created once (see {@link SchemaFactory#newMarshaller()})
+         * and reused for many {@link #marshal(Object)}/{@link #unmarshal(Marshalled)} calls over its lifetime -
+         * including calls made well after an earlier one returned (for example, a {@code Transport} discovering
+         * and marshalling a raw, previously-unmarshalled field while walking an already-produced
+         * {@link Marshalled} - see {@code JsonTransport.encode}) - so this state is deliberately never cleared;
+         * it is what allows such a later call to recognize an {@link Object} it has already seen. A
+         * {@link ReentrantLock}, rather than a concurrent collection, is used because the invariant that must
+         * hold is compound (e.g. "not in progress, and not already completed, therefore mark in progress and
+         * proceed to marshal") and must be checked-and-acted-upon atomically; {@link ReentrantLock} additionally
+         * allows the same thread to safely re-acquire it while recursing (directly, for {@link #marshal(Object)};
+         * via {@link #root()}, for {@link #unmarshal(Marshalled)}) into further {@link #marshal(Object)}/
+         * {@link #unmarshal(Marshalled)} calls of its own.
+         */
+        private final ReentrantLock lock;
+
+        /**
          * Constructs a {@link HierarchicalMarshaller} with the specified {@code null}able parent.
          *
          * @param parent the {@code null}able parent
@@ -702,6 +807,22 @@ public class ConcurrentSchemaFactory
         HierarchicalMarshaller(final HierarchicalMarshaller parent) {
             this.parent = Optional.ofNullable(parent);
             this.bindings = new ConcurrentHashMap<>();
+            this.inProgress = Collections.newSetFromMap(new IdentityHashMap<>());
+            this.completed = new IdentityHashMap<>();
+            this.unmarshalledById = new HashMap<>();
+            this.lock = new ReentrantLock();
+        }
+
+        /**
+         * Obtains the root {@link HierarchicalMarshaller} - the ancestor with no {@link #parent()} - of
+         * {@code this} {@link HierarchicalMarshaller}.
+         *
+         * @return the root {@link HierarchicalMarshaller}
+         */
+        private HierarchicalMarshaller root() {
+            return this.parent
+                .map(HierarchicalMarshaller::root)
+                .orElse(this);
         }
 
         /**
@@ -749,8 +870,35 @@ public class ConcurrentSchemaFactory
                     "The marshalling schema for " + object.getClass() + " is unavailable.");
             }
 
-            // use the MarshallingSchema to marshal
-            return schema.marshal(object, this);
+            this.lock.lock();
+            try {
+                // an Object that is its own ancestor (i.e. still being marshalled, synchronously, further up
+                // this very call stack) is a genuine cycle - there is no Marshalled yet for it to be
+                // referenced by
+                if (this.inProgress.contains(object)) {
+                    throw new CyclicMarshallingException(object);
+                }
+
+                // an Object already marshalled (whether shared or - once discovered lazily - cyclic) is
+                // represented by the very same Marshalled every time thereafter, rather than being destructed
+                // again
+                @SuppressWarnings("unchecked") final var alreadyMarshalled = (Marshalled<T>) this.completed.get(object);
+                if (alreadyMarshalled != null) {
+                    return alreadyMarshalled;
+                }
+
+                this.inProgress.add(object);
+                try {
+                    // use the MarshallingSchema to marshal
+                    final var marshalled = schema.marshal(object, this);
+                    this.completed.put(object, marshalled);
+                    return marshalled;
+                } finally {
+                    this.inProgress.remove(object);
+                }
+            } finally {
+                this.lock.unlock();
+            }
         }
 
         @Override
@@ -758,39 +906,70 @@ public class ConcurrentSchemaFactory
         public <T> T unmarshal(final Marshalled<T> marshalled) {
             Objects.requireNonNull(marshalled, "The Marshalled must not be null");
 
-            // Check for explicitly registered enums (deserialized by name via Enum.valueOf)
-            if (ConcurrentSchemaFactory.this.enumSchemasByClass.containsKey(marshalled.schema().owner())) {
-                final var enumName = (String) marshalled.values().stream().findFirst()
+            // unmarshalledById is only ever populated/consulted on the root - see #root() - so it, and the
+            // reference/id resolution built on it, are guarded by the root's lock rather than this one
+            final var root = root();
+            root.lock.lock();
+            try {
+                // a reference Marshalled has no schema/values of its own - resolve it to the Object already
+                // unmarshalled for the identity it refers to, rather than attempting to construct anything
+                final var reference = marshalled.reference();
+                if (reference.isPresent()) {
+                    final var id = reference.orElseThrow();
+                    if (!root.unmarshalledById.containsKey(id)) {
+                        throw new IllegalStateException("Cannot resolve reference [" + id + "] - it refers to an "
+                            + "Object that has not finished unmarshalling yet (a genuine cycle), which this "
+                            + "marshalling framework does not support reconstructing");
+                    }
+                    return (T) root.unmarshalledById.get(id);
+                }
+
+                // Check for explicitly registered enums (deserialized by name via Enum.valueOf)
+                if (ConcurrentSchemaFactory.this.enumSchemasByClass.containsKey(marshalled.schema().owner())) {
+                    final var enumName = (String) marshalled.values().stream().findFirst()
+                        .orElseThrow(() -> new IllegalArgumentException(
+                            "No name value present for enum " + marshalled.schema().owner()));
+                    final var enumResult = (T) Enum.valueOf((Class<Enum>) marshalled.schema().owner(), enumName);
+                    marshalled.id().ifPresent(id -> root.unmarshalledById.put(id, enumResult));
+                    return enumResult;
+                }
+
+                // obtain the UnmarshallingSchema for the owner of the Marshalled
+                final var schemas = ConcurrentSchemaFactory.this
+                    .unmarshallingSchemasByClass.get(marshalled.schema().owner());
+
+                if (schemas == null) {
+                    throw new IllegalArgumentException(
+                        "No schemas are available to unmarshall " + marshalled.schema().owner());
+                }
+
+                // attempt to find a Schema that matches
+                final var schema = schemas.stream()
+                    .filter(someSchema -> someSchema.parameters().count() == marshalled.values().count())
+                    .filter(someSchema -> Streams.zip(
+                            marshalled.values().stream(),
+                            someSchema.parameters().stream()
+                                .map(Parameter::type)
+                                .map(type -> Introspection.getClassFromType(type).orElse(Object.class)))
+                        .allMatch(pair -> pair.second().isInstance(pair.first()) ||
+                            ((!pair.second().isPrimitive()) && pair.first() == null) ||
+                            // a Lazy<X> parameter is matched by a not-yet-unmarshalled Marshalled<X> value -
+                            // UnmarshallingSchema.unmarshal() is what actually wraps it in a deferred Lazy
+                            (Lazy.class.equals(pair.second()) && pair.first() instanceof Marshalled<?>)))
+                    .findFirst()
+                    .map(unmarshallingSchema -> (UnmarshallingSchema<T>) unmarshallingSchema)
                     .orElseThrow(() -> new IllegalArgumentException(
-                        "No name value present for enum " + marshalled.schema().owner()));
-                return (T) Enum.valueOf((Class<Enum>) marshalled.schema().owner(), enumName);
+                        "No schemas are available to unmarshall " + marshalled.schema().owner()));
+
+                final var result = schema.unmarshal(marshalled, this);
+
+                // register the result so a reference elsewhere to the same identity can resolve to it
+                marshalled.id().ifPresent(id -> root.unmarshalledById.put(id, result));
+
+                return result;
+            } finally {
+                root.lock.unlock();
             }
-
-            // obtain the UnmarshallingSchema for the owner of the Marshalled
-            final var schemas = ConcurrentSchemaFactory.this
-                .unmarshallingSchemasByClass.get(marshalled.schema().owner());
-
-            if (schemas == null) {
-                throw new IllegalArgumentException(
-                    "No schemas are available to unmarshall " + marshalled.schema().owner());
-            }
-
-            // attempt to find a Schema that matches
-            final var schema = schemas.stream()
-                .filter(someSchema -> someSchema.parameters().count() == marshalled.values().count())
-                .filter(someSchema -> Streams.zip(
-                        marshalled.values().stream(),
-                        someSchema.parameters().stream()
-                            .map(Parameter::type)
-                            .map(type -> Introspection.getClassFromType(type).orElse(Object.class)))
-                    .allMatch(pair -> pair.second().isInstance(pair.first()) ||
-                        ((!pair.second().isPrimitive()) && pair.first() == null)))
-                .findFirst()
-                .map(unmarshallingSchema -> (UnmarshallingSchema<T>) unmarshallingSchema)
-                .orElseThrow(() -> new IllegalArgumentException(
-                    "No schemas are available to unmarshall " + marshalled.schema().owner()));
-
-            return schema.unmarshal(marshalled, this);
         }
 
         /**
