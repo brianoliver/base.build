@@ -29,6 +29,7 @@ import build.base.foundation.stream.Streams;
 import build.base.foundation.tuple.Pair;
 
 import java.lang.invoke.MethodHandles;
+import java.lang.ref.WeakReference;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -36,7 +37,6 @@ import java.lang.reflect.Modifier;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -45,6 +45,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -773,16 +774,32 @@ public class ConcurrentSchemaFactory
         private final Map<Object, Marshalled<?>> completed;
 
         /**
-         * The identity assigned to each already-unmarshalled {@link Object}, by the identity carried on the
-         * {@link Marshalled} it was unmarshalled from - only ever populated and consulted on the root
-         * {@link HierarchicalMarshaller} (see {@link #root()}), since {@link #newMarshaller()} otherwise creates
-         * a fresh child for every nested unmarshal.
+         * The {@link Object} unmarshalled from each identified {@link Marshalled} - only ever populated and
+         * consulted on the root {@link HierarchicalMarshaller} (see {@link #root()}), since
+         * {@link #newMarshaller()} otherwise creates a fresh child for every nested unmarshal.
+         * <p>
+         * Keyed by the {@link Marshalled} instance itself (relying on {@link Marshalled} implementations not
+         * overriding {@code equals}/{@code hashCode}, as {@link WeakHashMap} compares keys with them),
+         * <em>not</em> by its {@link Marshalled#id()}: an id is only unique within the one document it was
+         * assigned in, whereas this {@link HierarchicalMarshaller} is typically reused across many documents.
+         * Both weakly keyed and weakly valued, so neither a {@link Marshalled} (and its document) nor the
+         * {@link Object} unmarshalled from it is retained solely by this map. The value must be weak too: a
+         * self-referential object holds a deferred reference back to the {@link Marshalled} it was unmarshalled
+         * from, so a strong value would strongly reach its own key and the entry would never be collected. Once
+         * nothing else holds the {@link Object}, nothing can observe its identity, so it may safely be forgotten.
          */
-        private final Map<Integer, Object> unmarshalledById;
+        private final Map<Marshalled<?>, WeakReference<Object>> unmarshalled;
+
+        /**
+         * The identified {@link Marshalled}s currently being unmarshalled (i.e. still on the call stack) - like
+         * {@link #unmarshalled}, only ever populated and consulted on the root. A reference to one of these
+         * is a genuine synchronous cycle, which cannot be resolved on demand.
+         */
+        private final Set<Marshalled<?>> unmarshalling;
 
         /**
          * Guards {@link #inProgress}, {@link #completed}, and (on the root {@link HierarchicalMarshaller} only -
-         * see {@link #root()}) {@link #unmarshalledById}, none of which are otherwise safe for concurrent access.
+         * see {@link #root()}) {@link #unmarshalled}, none of which are otherwise safe for concurrent access.
          * <p>
          * A {@link HierarchicalMarshaller} is ordinarily created once (see {@link SchemaFactory#newMarshaller()})
          * and reused for many {@link #marshal(Object)}/{@link #unmarshal(Marshalled)} calls over its lifetime -
@@ -809,7 +826,8 @@ public class ConcurrentSchemaFactory
             this.bindings = new ConcurrentHashMap<>();
             this.inProgress = Collections.newSetFromMap(new IdentityHashMap<>());
             this.completed = new IdentityHashMap<>();
-            this.unmarshalledById = new HashMap<>();
+            this.unmarshalled = new WeakHashMap<>();
+            this.unmarshalling = Collections.newSetFromMap(new IdentityHashMap<>());
             this.lock = new ReentrantLock();
         }
 
@@ -911,17 +929,32 @@ public class ConcurrentSchemaFactory
             final var root = root();
             root.lock.lock();
             try {
-                // a reference Marshalled has no schema/values of its own - resolve it to the Object already
-                // unmarshalled for the identity it refers to, rather than attempting to construct anything
+                // a reference Marshalled has no schema/values of its own - resolve it to the Object unmarshalled
+                // from the Marshalled it refers to, rather than attempting to construct anything
                 final var reference = marshalled.reference();
                 if (reference.isPresent()) {
-                    final var id = reference.orElseThrow();
-                    if (!root.unmarshalledById.containsKey(id)) {
-                        throw new IllegalStateException("Cannot resolve reference [" + id + "] - it refers to an "
-                            + "Object that has not finished unmarshalling yet (a genuine cycle), which this "
-                            + "marshalling framework does not support reconstructing");
+                    final var referent = marshalled.referent().orElseThrow(() -> new IllegalStateException(
+                        "Cannot resolve reference [" + reference.orElseThrow() + "] - the Marshalled it refers to "
+                            + "is unknown"));
+                    if (root.unmarshalling.contains(referent)) {
+                        throw new IllegalStateException("Cannot resolve reference [" + reference.orElseThrow()
+                            + "] - it refers to an Object that has not finished unmarshalling yet (a genuine "
+                            + "cycle), which this marshalling framework does not support reconstructing");
                     }
-                    return (T) root.unmarshalledById.get(id);
+                    // already unmarshalled, or (defined within a deferred value nothing has forced yet) on demand
+                    return unmarshal(referent);
+                }
+
+                // an Object already unmarshalled from this very Marshalled (for example, on demand, via a
+                // reference reached before this definition was) is the Object, rather than being constructed
+                // a second time
+                final var identified = marshalled.id().isPresent();
+                if (identified) {
+                    final var existing = root.unmarshalled.get(marshalled);
+                    final var existingObject = existing == null ? null : existing.get();
+                    if (existingObject != null) {
+                        return (T) existingObject;
+                    }
                 }
 
                 // Check for explicitly registered enums (deserialized by name via Enum.valueOf)
@@ -930,7 +963,9 @@ public class ConcurrentSchemaFactory
                         .orElseThrow(() -> new IllegalArgumentException(
                             "No name value present for enum " + marshalled.schema().owner()));
                     final var enumResult = (T) Enum.valueOf((Class<Enum>) marshalled.schema().owner(), enumName);
-                    marshalled.id().ifPresent(id -> root.unmarshalledById.put(id, enumResult));
+                    if (identified) {
+                        root.unmarshalled.put(marshalled, new WeakReference<>(enumResult));
+                    }
                     return enumResult;
                 }
 
@@ -961,10 +996,21 @@ public class ConcurrentSchemaFactory
                     .orElseThrow(() -> new IllegalArgumentException(
                         "No schemas are available to unmarshall " + marshalled.schema().owner()));
 
-                final var result = schema.unmarshal(marshalled, this);
+                if (identified) {
+                    root.unmarshalling.add(marshalled);
+                }
+                final T result;
+                try {
+                    result = schema.unmarshal(marshalled, this);
+                }
+                finally {
+                    root.unmarshalling.remove(marshalled);
+                }
 
-                // register the result so a reference elsewhere to the same identity can resolve to it
-                marshalled.id().ifPresent(id -> root.unmarshalledById.put(id, result));
+                // register the result so a reference elsewhere to the same Marshalled can resolve to it
+                if (identified) {
+                    root.unmarshalled.put(marshalled, new WeakReference<>(result));
+                }
 
                 return result;
             } finally {

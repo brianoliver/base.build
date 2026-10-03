@@ -78,4 +78,16 @@ public interface Marshalled<T> {
     default Optional<Integer> reference() {
         return Optional.empty();
     }
+
+    /**
+     * When {@code this} {@link Marshalled} is a {@link #reference()}, provides the {@link Marshalled} it refers to
+     * (the one whose {@link #id()} was reported), if known. This allows a reference to be resolved on demand, even
+     * when the referenced {@link Object} has not yet been unmarshalled, for example because it is defined within a
+     * deferred ({@link build.base.foundation.Lazy}) value that nothing has yet forced.
+     *
+     * @return the {@link Optional} referenced {@link Marshalled}, otherwise {@link Optional#empty()}
+     */
+    default Optional<Marshalled<T>> referent() {
+        return Optional.empty();
+    }
 }
