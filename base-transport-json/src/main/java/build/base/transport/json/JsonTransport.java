@@ -21,11 +21,14 @@ package build.base.transport.json;
  */
 
 import build.base.foundation.Introspection;
+import build.base.foundation.Lazy;
 import build.base.foundation.stream.Streamable;
 import build.base.foundation.stream.Streams;
 import build.base.foundation.tuple.Pair;
 import build.base.json.Json;
+import build.base.json.JsonArray;
 import build.base.json.JsonNull;
+import build.base.json.JsonNumber;
 import build.base.json.JsonObject;
 import build.base.json.JsonString;
 import build.base.json.JsonValue;
@@ -77,10 +80,14 @@ import java.lang.reflect.Modifier;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
@@ -95,6 +102,26 @@ public class JsonTransport
 
     private static final String TYPE_FIELD = "@type";
     private static final String VALUE_FIELD = "value";
+    private static final String ID_FIELD = "@id";
+    private static final String REF_FIELD = "@ref";
+
+    /**
+     * The identity assigned, for the current {@link #write}, to each {@link Marshalled} already encountered -
+     * so that a {@link Marshalled} reached a second time (whether still being encoded, i.e. genuinely cyclic,
+     * or already fully encoded, i.e. merely shared) is represented as a back-reference rather than re-walked.
+     * <p>
+     * Scoped to the current {@link #write} via {@link ThreadLocal}, since {@link #encode} is public API also
+     * invoked (recursively) by {@link Codec}s, which cannot be given an additional context parameter. The state
+     * is owned by the outermost {@link #encodeMarshalled} and cleared when it completes, even if it throws.
+     */
+    private static final ThreadLocal<Map<Marshalled<?>, Integer>> ENCODING_IDS =
+        ThreadLocal.withInitial(IdentityHashMap::new);
+
+    /**
+     * The {@link Marshalled} decoded for each {@code @id} so far during the current outermost decode, so a
+     * {@code @ref} to it can be resolved on demand. See {@link Marshalled#referent()}.
+     */
+    private static final ThreadLocal<Map<Integer, Marshalled<?>>> DECODED_BY_ID = new ThreadLocal<>();
 
     private final SchemaFactory schemaFactory;
     private final ConcurrentHashMap<Class<?>, Codec<?>> codecs;
@@ -212,15 +239,40 @@ public class JsonTransport
 
     /**
      * Encodes a {@link Marshalled} object as a {@link JsonObject} and writes it to the provided {@link Writer}.
+     * <p>
+     * Any raw value encountered along the way is marshalled using a new {@link Marshaller}, distinct from the one
+     * that produced {@code marshalled}. A raw value that refers back to the object {@code marshalled} was produced
+     * from is therefore marshalled afresh, and a cycle through it only closes one level further in than the
+     * outermost object. To close it onto the outermost object, use {@link #write(Marshalled, Writer, Marshaller)}
+     * with the {@link Marshaller} that produced {@code marshalled}.
      *
      * @param marshalled the {@link Marshalled} object
      * @param writer     the destination
      */
     public void write(final Marshalled<?> marshalled, final Writer writer) {
+        write(marshalled, writer, this.schemaFactory.newMarshaller());
+    }
+
+    /**
+     * Encodes a {@link Marshalled} object as a {@link JsonObject} and writes it to the provided {@link Writer},
+     * using the given {@link Marshaller} to marshal any raw values encountered along the way.
+     * <p>
+     * Supplying the very {@link Marshaller} that produced {@code marshalled} lets a raw value that refers back
+     * to the object {@code marshalled} was produced from be recognized as that same {@link Marshalled} (a
+     * {@link Marshaller} returns the same {@link Marshalled} for an object it has already marshalled), so the
+     * cycle is closed with a reference to the outermost object. With a different {@link Marshaller} the raw
+     * value is marshalled afresh, and the cycle only closes one level further in.
+     *
+     * @param marshalled the {@link Marshalled} object
+     * @param writer     the destination
+     * @param marshaller the {@link Marshaller}
+     */
+    public void write(final Marshalled<?> marshalled, final Writer writer, final Marshaller marshaller) {
         Objects.requireNonNull(marshalled, "marshalled");
         Objects.requireNonNull(writer, "writer");
+        Objects.requireNonNull(marshaller, "marshaller");
         try {
-            writer.write(encodeMarshalled(marshalled, this.schemaFactory.newMarshaller()).toJsonString());
+            writer.write(encodeMarshalled(marshalled, marshaller).toJsonString());
         }
         catch (final IOException e) {
             throw new UncheckedIOException(e);
@@ -256,6 +308,10 @@ public class JsonTransport
 
     /**
      * Encodes a value of the given type as a {@link JsonValue}, used by codecs for recursive encoding.
+     * <p>
+     * Shared and cyclic {@link Marshalled}s are tracked in state scoped to the current thread, so a
+     * {@link Codec} must encode nested values on the calling thread (not, for example, in a parallel stream),
+     * otherwise a repeated {@link Marshalled} is encoded afresh instead of as an {@code @ref}.
      *
      * @param parameter  the {@link Parameter}
      * @param valueType  the {@link Type} of the value
@@ -350,6 +406,50 @@ public class JsonTransport
             .orElseThrow(() -> new IllegalStateException(
                 "Failed to determine class for parameter [" + parameter.name() + "] of type [" + type + "]"));
 
+        // a Lazy<T> parameter is willing to receive its value once it becomes available, rather than
+        // requiring it up front - so, for a marshallable T, this decodes only as far as the structural
+        // Marshalled<T> (exactly as the Marshalled.class branch below does), leaving the actual unmarshal()
+        // deferred. It can't be deferred here: the Marshaller in scope at this point is whichever one is
+        // parsing the JSON (e.g. via JsonTransport.read()), which is not necessarily the same Marshaller
+        // that will eventually construct objects from the result (e.g. via a later, separate
+        // Marshaller.unmarshal() call) - so ConcurrentSchemaFactory.UnmarshallingSchema.unmarshal() is what
+        // actually wraps this in a Lazy, using the Marshaller that is genuinely doing the constructing. This
+        // is what allows a genuine cycle to be reconstructed at all: by the time something actually calls
+        // Lazy.get(), the rest of the decode this value participates in - including, for a self-reference,
+        // the very object whose constructor is receiving this Lazy - has finished and is resolvable.
+        // <p>
+        // This only applies when the value is a raw structural object (i.e. the corresponding @Marshal side
+        // exposed the value as a plain T, not as a Lazy<T> itself) - a symmetric Lazy<T> field is encoded by
+        // LazyCodec instead, as the array-wrapped [] / [element] shape (mirroring OptionalCodec), and must be
+        // decoded that same way (eagerly, since there is no separate raw/lazy asymmetry to defer across).
+        if (Lazy.class.isAssignableFrom(readableClass) && value instanceof JsonObject) {
+            final var elementType = Introspection.getParameterType(type)
+                .orElseThrow(() -> new IllegalStateException(
+                    "Failed to determine Lazy<T> element type for parameter [" + parameter.name() + "]"));
+            final var elementClass = Introspection.getClassFromType(elementType).orElse(Object.class);
+            if (Marshalled.class.isAssignableFrom(elementClass) || marshaller.isMarshallable(elementClass)) {
+                return (T) decodeMarshalled(value.asObject(), marshaller);
+            }
+            if (elementClass == Object.class
+                || elementClass.isInterface()
+                || Modifier.isAbstract(elementClass.getModifiers())) {
+
+                // mirrors the abstract/interface dispatch below (unwrap the @type/value wrapper to find the
+                // concrete type) but, as above, stops at the structural Marshalled<T> rather than resolving
+                // it - the wrapped value is that concrete type's own self-describing (@type/@id) object, so
+                // decodeMarshalled can resolve it without needing the concrete type looked up separately here
+                final var wrapper = value.asObject();
+                if (!wrapper.has(VALUE_FIELD)) {
+                    throw new IllegalStateException("Failed to decode Lazy<T> parameter [" + parameter.name()
+                        + "]: expected a [" + VALUE_FIELD + "] member in the wrapper for type [" + elementClass + "]");
+                }
+                return (T) decodeMarshalled(wrapper.get(VALUE_FIELD).asObject(), marshaller);
+            }
+            // not a deferred-cycle case: a plain-valued Lazy<T> (e.g. Lazy<Integer>) is encoded via LazyCodec
+            // (array-wrapped, mirroring OptionalCodec/StreamableCodec), not as a raw value - so fall through
+            // to the getCodec(type) lookup below instead of assuming raw passthrough.
+        }
+
         final var optionalCodec = getCodec(type);
         if (optionalCodec.isPresent()) {
             return (T) optionalCodec.orElseThrow().decode(this, parameter, type, value, marshaller);
@@ -377,10 +477,85 @@ public class JsonTransport
             + parameter.name() + "] of type [" + readableClass + "]");
     }
 
-    @SuppressWarnings("unchecked")
     private JsonObject encodeMarshalled(final Marshalled<?> marshalled, final Marshaller marshaller) {
+
+        // the outermost encode (empty ids) owns the identity state and clears it when finished, so it never
+        // outlives the encode - whether it was started by write() or by a direct call to encode()
+        final var outermost = ENCODING_IDS.get().isEmpty();
+        try {
+            final var encoded = walkMarshalled(marshalled, marshaller);
+            return outermost ? withoutUnreferencedIds(encoded) : encoded;
+        }
+        finally {
+            if (outermost) {
+                ENCODING_IDS.remove();
+            }
+        }
+    }
+
+    /**
+     * Removes every {@code @id} from an encoded tree that no {@code @ref} within it refers to. An identity is
+     * assigned to every {@link Marshalled} as it is encoded, as whether it is referenced again can only be
+     * known once everything has been encoded - by which point its (immutable) {@link JsonObject} has already
+     * been built. Pruning afterwards keeps the output free of identities nothing needs.
+     */
+    private static JsonObject withoutUnreferencedIds(final JsonObject encoded) {
+        final var referenced = new HashSet<Integer>();
+        collectReferences(encoded, referenced);
+        return (JsonObject) prune(encoded, referenced);
+    }
+
+    private static void collectReferences(final JsonValue value, final Set<Integer> referenced) {
+        if (value instanceof JsonObject object) {
+            if (object.has(REF_FIELD)) {
+                referenced.add(object.get(REF_FIELD).asNumber().toNumber().intValue());
+            }
+            object.members().values().forEach(member -> collectReferences(member, referenced));
+        }
+        else if (value instanceof JsonArray array) {
+            array.values().forEach(element -> collectReferences(element, referenced));
+        }
+    }
+
+    private static JsonValue prune(final JsonValue value, final Set<Integer> referenced) {
+        if (value instanceof JsonObject object) {
+            final var members = new LinkedHashMap<String, JsonValue>();
+            for (final var entry : object.members().entrySet()) {
+                if (ID_FIELD.equals(entry.getKey())
+                    && !referenced.contains(entry.getValue().asNumber().toNumber().intValue())) {
+                    continue;
+                }
+                members.put(entry.getKey(), prune(entry.getValue(), referenced));
+            }
+            return JsonObject.of(members);
+        }
+        if (value instanceof JsonArray array) {
+            return JsonArray.of(array.values().stream()
+                .<JsonValue>map(element -> prune(element, referenced))
+                .toList());
+        }
+        return value;
+    }
+
+    @SuppressWarnings("unchecked")
+    private JsonObject walkMarshalled(final Marshalled<?> marshalled, final Marshaller marshaller) {
+
+        final var ids = ENCODING_IDS.get();
+        final var existingId = ids.get(marshalled);
+        if (existingId != null) {
+            // already encoded (or still being encoded, i.e. a genuine cycle) - reference it rather than
+            // re-walking it, which for a genuine cycle would otherwise recurse forever
+            return JsonObject.of(Map.of(REF_FIELD, JsonNumber.of(existingId)));
+        }
+
+        // assign the identity before walking this Marshalled's own values, so a cycle discovered while doing
+        // so (directly, or transitively) can already reference it
+        final var id = ids.size() + 1;
+        ids.put(marshalled, id);
+
         final var members = new LinkedHashMap<String, JsonValue>();
         members.put(TYPE_FIELD, JsonString.of(marshalled.schema().owner().getName()));
+        members.put(ID_FIELD, JsonNumber.of(id));
 
         final Iterable<Pair<Parameter, Object>> pairs = () -> Streams.zip(
                 marshalled.schema().parameters().stream(),
@@ -406,8 +581,58 @@ public class JsonTransport
         return JsonObject.of(members);
     }
 
-    @SuppressWarnings("unchecked")
     private <T> Marshalled<T> decodeMarshalled(final JsonObject json, final Marshaller marshaller) {
+
+        // the outermost decode owns the definitions map; every reference decoded within it captures the map, so
+        // it remains usable (to resolve a reference on demand) long after this thread-local has been cleared
+        final var outermost = DECODED_BY_ID.get() == null;
+        if (outermost) {
+            DECODED_BY_ID.set(new HashMap<>());
+        }
+        try {
+            return walkDecodedMarshalled(json, marshaller);
+        }
+        finally {
+            if (outermost) {
+                DECODED_BY_ID.remove();
+            }
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> Marshalled<T> walkDecodedMarshalled(final JsonObject json, final Marshaller marshaller) {
+
+        final var definitions = DECODED_BY_ID.get();
+
+        if (json.has(REF_FIELD)) {
+            final var referencedId = json.get(REF_FIELD).asNumber().toNumber().intValue();
+            return new Marshalled<T>() {
+                @Override
+                public Schema<T> schema() {
+                    throw new UnsupportedOperationException("a reference Marshalled has no schema");
+                }
+
+                @Override
+                public Streamable<Object> values() {
+                    throw new UnsupportedOperationException("a reference Marshalled has no values");
+                }
+
+                @Override
+                public Optional<Integer> reference() {
+                    return Optional.of(referencedId);
+                }
+
+                @Override
+                public Optional<Marshalled<T>> referent() {
+                    return Optional.ofNullable((Marshalled<T>) definitions.get(referencedId));
+                }
+            };
+        }
+
+        final var id = json.has(ID_FIELD)
+            ? Optional.of(json.get(ID_FIELD).asNumber().toNumber().intValue())
+            : Optional.<Integer>empty();
+
         final var typeName = json.get(TYPE_FIELD).asString().value();
         final Class<?> typeClass = loadClass(typeName, null);
 
@@ -424,7 +649,7 @@ public class JsonTransport
 
         for (final var entry : json.members().entrySet()) {
             final var fieldName = entry.getKey();
-            if (TYPE_FIELD.equals(fieldName)) {
+            if (TYPE_FIELD.equals(fieldName) || ID_FIELD.equals(fieldName)) {
                 continue;
             }
             final var fieldValue = entry.getValue();
@@ -467,7 +692,7 @@ public class JsonTransport
         final var values = Streamable.of(match.first().parameters().stream()
             .map(p -> match.second().get(p.name()).second().orElse(null)));
 
-        return new Marshalled<T>() {
+        final var definition = new Marshalled<T>() {
             @Override
             @SuppressWarnings("unchecked")
             public Schema<T> schema() {
@@ -478,7 +703,15 @@ public class JsonTransport
             public Streamable<Object> values() {
                 return values;
             }
+
+            @Override
+            public Optional<Integer> id() {
+                return id;
+            }
         };
+
+        id.ifPresent(identity -> definitions.put(identity, definition));
+        return definition;
     }
 
     private Class<?> loadClass(final String name, final Parameter parameter) {

@@ -20,6 +20,7 @@ package build.base.transport.json;
  * #L%
  */
 
+import build.base.foundation.Lazy;
 import build.base.marshalling.Marshalled;
 import build.base.marshalling.Marshalling;
 import build.base.marshalling.Parameter;
@@ -27,6 +28,8 @@ import build.base.transport.Transformer;
 import build.base.transport.json.codec.LazyCodec;
 import build.base.transport.json.codec.OptionalCodec;
 import build.base.transport.json.codec.StreamableCodec;
+import build.base.transport.json.example.Address;
+import build.base.transport.json.example.LazyAddressHolder;
 import build.base.transport.json.example.NestedGenerics;
 import org.junit.jupiter.api.Test;
 
@@ -95,6 +98,29 @@ class NestedGenericCodecTests {
 
         assertThat(roundTrip(nested))
             .isEqualTo(nested);
+    }
+
+    /**
+     * {@code Lazy<Address>} declared on both the {@code @Marshal} and {@code @Unmarshal} side (unlike
+     * {@code Node}, which declares {@code Lazy} only on unmarshal to defer a cycle) - {@link LazyCodec} handles
+     * encode and decode symmetrically here, with no cycle involved.
+     */
+    @Test
+    void shouldRoundTripSymmetricLazyOfMarshallableElement() {
+
+        final var holder = new LazyAddressHolder(Lazy.of(new Address("1 Main St", "Springfield")));
+
+        final var marshaller = Marshalling.newMarshaller();
+        final var marshalled = marshaller.marshal(holder);
+
+        final var transport = new JsonTransport();
+        final var writer = new StringWriter();
+        transport.write(marshalled, writer);
+
+        final Marshalled<LazyAddressHolder> transported = transport.read(new StringReader(writer.toString()));
+
+        assertThat(marshaller.unmarshal(transported).address())
+            .isEqualTo(new Address("1 Main St", "Springfield"));
     }
 
     private static NestedGenerics roundTrip(final NestedGenerics nested) {
