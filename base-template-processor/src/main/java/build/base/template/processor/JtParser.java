@@ -25,7 +25,11 @@ import build.base.parsing.AbstractParser;
 import build.base.parsing.ParseException;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.regex.Pattern;
 
 final class JtParser {
@@ -37,38 +41,127 @@ final class JtParser {
     private static final Pattern IMPORT_BODY =
         Pattern.compile("(static\\s+)?[a-zA-Z_$][\\w$]*(\\.[a-zA-Z_$][\\w$]*)*(\\.\\*)?");
 
+    // A double-quoted option value; no escapes, so delimiters containing a backslash or quote are not expressible
+    private static final Pattern STRING_LITERAL = Pattern.compile("\"[^\"\\n\\\\]*\"");
+
+    // A whole-line Java call statement such as "out.raw(x);" (what the text after the prefix looks like when someone
+    // wrote Java directly instead of using the java directive); annotations start in upper case and attributes
+    // such as Alpine's @click.outside="..." have no call parentheses, so neither matches
+    private static final Pattern LOOKS_LIKE_STATEMENT =
+        Pattern.compile("[a-z_$][\\w$]*(\\.[\\w$]+)*\\(.*\\)\\s*;");
+
     private JtParser() {
     }
 
     static ParsedTemplate parse(final String content, final String sourceFile) {
-        return new JtFileParser(content, sourceFile).run();
+        return parse(content, sourceFile, outType -> Syntax.DEFAULT);
+    }
+
+    /**
+     * @param outSyntax resolves the default syntax of an out type, as written in the {@code out} declaration; the
+     *                  template's {@code option} lines override it
+     */
+    static ParsedTemplate parse(final String content,
+                                final String sourceFile,
+                                final Function<String, Syntax> outSyntax) {
+        return parse(content, sourceFile, outSyntax, warning -> { });
+    }
+
+    /**
+     * @param warnings receives a message for each construct that is accepted but probably not what the author meant
+     */
+    static ParsedTemplate parse(final String content,
+                                final String sourceFile,
+                                final Function<String, Syntax> outSyntax,
+                                final Consumer<String> warnings) {
+        return new JtFileParser(content, sourceFile, outSyntax, warnings).run();
     }
 
     private static void parseBodyLine(final String line,
                                       final List<BodyNode> body,
                                       final String sourceFile,
-                                      final int lineNumber) {
+                                      final int lineNumber,
+                                      final Syntax syntax,
+                                      final Consumer<String> warnings) {
         final String trimmed = line.trim();
-        if (trimmed.equals("@include") || trimmed.startsWith("@include ")) {
-            final String expression = trimmed.substring("@include".length()).trim();
-            if (expression.isEmpty()) {
-                throw new JtParseException(
-                    sourceFile + ": @include requires an expression at line " + lineNumber + ", column 1",
-                    sourceFile, lineNumber, 1);
+        final int column = line.indexOf(syntax.prefix()) + 1;
+
+        // A doubled prefix is an escape: the line is text with one prefix removed
+        if (trimmed.startsWith(syntax.escapedPrefix())) {
+            final String unescaped = line.substring(0, column - 1) + line.substring(column - 1 + syntax.prefix().length());
+            body.addAll(new TextLineParser(unescaped + "\n", sourceFile, lineNumber, syntax,
+                                           syntax.prefix().length()).run());
+            return;
+        }
+
+        if (trimmed.startsWith(syntax.prefix())) {
+            final String rest = trimmed.substring(syntax.prefix().length());
+            if (rest.startsWith("}")) {
+                body.add(new BodyNode.CodeLine(rest.trim()));
+                return;
             }
-            body.add(new BodyNode.Include(expression));
-            return;
+
+            int end = 0;
+            while (end < rest.length() && Character.isJavaIdentifierPart(rest.charAt(end))) {
+                end++;
+            }
+            final String directive = rest.substring(0, end);
+            final String argument = rest.substring(end).trim();
+
+            if (Syntax.DIRECTIVES.contains(directive)) {
+                if (Syntax.RESERVED.contains(directive)) {
+                    throw directiveError(sourceFile, lineNumber, column,
+                                         "directive " + syntax.prefix() + directive + " is not supported yet");
+                }
+                switch (directive) {
+                    case "end" -> throw directiveError(sourceFile, lineNumber, column,
+                                                       "unexpected content after " + syntax.prefix() + "end");
+                    case "include" -> {
+                        if (argument.isEmpty()) {
+                            throw directiveError(sourceFile, lineNumber, column,
+                                                 syntax.prefix() + "include requires an expression");
+                        }
+                        body.add(new BodyNode.Include(argument));
+                    }
+                    case "java" -> {
+                        if (argument.isEmpty()) {
+                            throw directiveError(sourceFile, lineNumber, column,
+                                                 syntax.prefix() + "java requires a statement");
+                        }
+                        body.add(new BodyNode.CodeLine(argument));
+                    }
+                    default -> body.add(new BodyNode.CodeLine(rest.trim()));
+                }
+                return;
+            }
+            // Not a directive (for example a Java annotation or a CSS at-rule): the line is text
+            if (LOOKS_LIKE_STATEMENT.matcher(rest.trim()).matches()) {
+                warnings.accept(sourceFile + ": line " + lineNumber + ": '" + trimmed + "' looks like Java but '"
+                                + syntax.prefix() + directive + "' is not a directive, so it is emitted as text; use '"
+                                + syntax.prefix() + "java ' to run it or '" + syntax.escapedPrefix()
+                                + "' to silence this warning");
+            }
         }
-        if (trimmed.startsWith("@")) {
-            body.add(new BodyNode.CodeLine(trimmed.substring(1).trim()));
-            return;
-        }
-        body.addAll(new TextLineParser(line + "\n", sourceFile, lineNumber).run());
+        body.addAll(new TextLineParser(line + "\n", sourceFile, lineNumber, syntax, 0).run());
+    }
+
+    private static JtParseException directiveError(final String sourceFile,
+                                                   final int lineNumber,
+                                                   final int column,
+                                                   final String message) {
+        return new JtParseException(
+            sourceFile + ": " + message + " at line " + lineNumber + ", column " + column,
+            sourceFile, lineNumber, column);
     }
 
     /** Test-facing entry point: parse a single text line, appending the resulting nodes to {@code body}. */
     static void parseTextLine(final String line, final List<BodyNode> body) {
-        body.addAll(new TextLineParser(line, null, 1).run());
+        parseTextLine(line, body, Syntax.DEFAULT);
+    }
+
+    /** Test-facing entry point: parse a single text line with the given syntax. */
+    static void parseTextLine(final String line, final List<BodyNode> body, final Syntax syntax) {
+        body.addAll(new TextLineParser(line, null, 1, syntax, 0).run());
     }
 
     /**
@@ -81,10 +174,17 @@ final class JtParser {
         extends AbstractParser<ParsedTemplate> {
 
         private final String sourceFile;
+        private final Function<String, Syntax> outSyntax;
+        private final Consumer<String> warnings;
 
-        JtFileParser(final String content, final String sourceFile) {
+        JtFileParser(final String content,
+                     final String sourceFile,
+                     final Function<String, Syntax> outSyntax,
+                     final Consumer<String> warnings) {
             super(content);
             this.sourceFile = sourceFile;
+            this.outSyntax = outSyntax;
+            this.warnings = warnings;
         }
 
         @Override
@@ -97,7 +197,28 @@ final class JtParser {
             String packageName = "";
             final List<String> imports = new ArrayList<>();
 
+            // The header is read in a fixed order: the output type, the options, then the Java declarations
             skip();
+            if (!followsKeyword("out")) {
+                throw error("missing 'out' declaration (a template must begin with 'out <Type>;')",
+                            scanner.getLocation());
+            }
+            consumeKeyword("out");
+            skip();
+            final var outLocation = scanner.getLocation();
+            final String outType = scanner.consume(QUALIFIED_NAME);
+            skip();
+            expect(";");
+            skip();
+
+            final Syntax defaults;
+            try {
+                defaults = outSyntax.apply(outType);
+            } catch (final IllegalArgumentException e) {
+                throw error("invalid syntax declared by " + outType + ": " + e.getMessage(), outLocation);
+            }
+            final Syntax syntax = parseOptions(defaults);
+
             if (followsKeyword("package")) {
                 consumeKeyword("package");
                 skip();
@@ -116,12 +237,14 @@ final class JtParser {
                 skip();
             }
 
+            if (followsKeyword("option")) {
+                throw error("'option' must come directly after the 'out' declaration, before 'package' and 'import'",
+                            scanner.getLocation());
+            }
             if (!followsKeyword("template")) {
                 throw new JtParseException(sourceFile + ": missing template declaration");
             }
             consumeKeyword("template");
-            skip();
-            final String outType = scanner.consume(QUALIFIED_NAME);
             skip();
             final String className = scanner.consume(QUALIFIED_NAME);
             skip();
@@ -150,11 +273,11 @@ final class JtParser {
                 if (scanner.follows('\n')) {
                     scanner.consumeChar();
                 }
-                if (line.trim().equals("@end")) {
+                if (line.trim().equals(syntax.prefix() + "end")) {
                     ended = true;
                     break;
                 }
-                parseBodyLine(line, body, sourceFile, lineNumber);
+                parseBodyLine(line, body, sourceFile, lineNumber, syntax, warnings);
             }
             if (!ended) {
                 throw error("missing @end for template " + className, scanner.getLocation());
@@ -168,6 +291,50 @@ final class JtParser {
             }
 
             return new ParsedTemplate(packageName, imports, outType, className, params, body);
+        }
+
+        /**
+         * Parses {@code option <name> = "<value>";} declarations, which follow the {@code out} declaration, and returns the resulting syntax.
+         */
+        private Syntax parseOptions(final Syntax defaults) {
+            String prefix = defaults.prefix();
+            String interpolation = defaults.interpolation();
+            Syntax syntax = defaults;
+            final Set<String> seen = new HashSet<>();
+
+            while (followsKeyword("option")) {
+                consumeKeyword("option");
+                skip();
+                final var location = scanner.getLocation();
+                final String name = scanner.consume(QUALIFIED_NAME);
+                skip();
+                expect("=");
+                skip();
+                final String quoted = scanner.consume(STRING_LITERAL);
+                final String value = quoted.substring(1, quoted.length() - 1);
+                skip();
+                expect(";");
+                skip();
+
+                if (!seen.add(name)) {
+                    throw error("duplicate option '" + name + "'", location);
+                }
+                switch (name) {
+                    case "prefix" -> prefix = value;
+                    case "interpolation" -> interpolation = value;
+                    default -> throw error("unknown option '" + name + "' (expected prefix or interpolation)",
+                                           location);
+                }
+
+                // Validate as each option is read, so an error points at the option that caused it
+                try {
+                    syntax = new Syntax(prefix, interpolation);
+                } catch (final IllegalArgumentException e) {
+                    throw error("invalid option '" + name + "': " + e.getMessage(), location);
+                }
+            }
+
+            return syntax;
         }
 
         private JtParseException error(final String message, final LookaheadReader.Location location) {
@@ -198,15 +365,26 @@ final class JtParser {
 
         private final String sourceFile;
         private final int lineNumber;
+        private final Syntax syntax;
+        private final int columnOffset;
 
         /**
-         * @param sourceFile the file the line came from, or {@code null} when parsing a bare line
-         * @param lineNumber the one-based line number of the line within the file
+         * @param sourceFile   the file the line came from, or {@code null} when parsing a bare line
+         * @param lineNumber   the one-based line number of the line within the file
+         * @param syntax       the delimiters of the template
+         * @param columnOffset the number of characters removed from the line before it reached this parser (an
+         *                     escaped prefix), added to reported columns so they match the source file
          */
-        TextLineParser(final String input, final String sourceFile, final int lineNumber) {
+        TextLineParser(final String input,
+                       final String sourceFile,
+                       final int lineNumber,
+                       final Syntax syntax,
+                       final int columnOffset) {
             super(input);
             this.sourceFile = sourceFile;
             this.lineNumber = lineNumber;
+            this.syntax = syntax;
+            this.columnOffset = columnOffset;
         }
 
         @Override
@@ -217,17 +395,26 @@ final class JtParser {
         @Override
         protected List<BodyNode> parse() {
             final List<BodyNode> nodes = new ArrayList<>();
+            final StringBuilder text = new StringBuilder();
             while (scanner.hasNext()) {
-                if (scanner.follows("#{")) {
+                // The escape is checked first: it contains the opener
+                if (scanner.follows(syntax.escapedInterpolation())) {
+                    scanner.consume(syntax.escapedInterpolation());
+                    text.append(syntax.interpolation());
+                } else if (scanner.follows(syntax.interpolation())) {
+                    if (!text.isEmpty()) {
+                        nodes.add(new BodyNode.RawText(text.toString()));
+                        text.setLength(0);
+                    }
                     final var start = scanner.getLocation();
-                    scanner.consume("#");
+                    scanner.consume(syntax.interpolationLead());
                     nodes.add(new BodyNode.Expression(consumeExpression(start)));
                 } else {
-                    final String raw = scanner.consumeUntil("#{");
-                    if (!raw.isEmpty()) {
-                        nodes.add(new BodyNode.RawText(raw));
-                    }
+                    text.append(scanner.consumeChar());
                 }
+            }
+            if (!text.isEmpty()) {
+                nodes.add(new BodyNode.RawText(text.toString()));
             }
             return nodes;
         }
@@ -281,10 +468,10 @@ final class JtParser {
         @Override
         protected RuntimeException translate(final ParseException cause) {
             // The scanner's location is relative to this single line, so only its column is meaningful
-            final int column = cause.getLocation().map(LookaheadReader.Location::getColumn).orElse(1);
+            final int column = cause.getLocation().map(LookaheadReader.Location::getColumn).orElse(1) + columnOffset;
             return new JtParseException(
                 (sourceFile == null ? "" : sourceFile + ": ")
-                + "unclosed '#{' expression at line " + lineNumber + ", column " + column,
+                + "unclosed '" + syntax.interpolation() + "' expression at line " + lineNumber + ", column " + column,
                 sourceFile, lineNumber, column);
         }
     }

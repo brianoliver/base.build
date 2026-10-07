@@ -1,8 +1,10 @@
+out HtmlOut;
+
 package build.base.template.processor.generated;
 
 import java.util.List;
 
-template HtmlOut TasksTemplate(String title, List<String> items) {
+template TasksTemplate(String title, List<String> items) {
 <!DOCTYPE html>
 <html>
 <body>

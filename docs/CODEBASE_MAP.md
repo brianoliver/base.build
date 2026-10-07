@@ -787,14 +787,18 @@ Optional<Path<String>> path = Graphs.shortestPath(g, "A", "C");
 | `Out` | Abstract output sink; `raw(String)` writes unescaped; buffers to `StringBuilder` or streams to `Writer`; `content()` returns the buffer and throws `IllegalStateException` when Writer-backed (`toString()` returns `""` in that case) |
 | `HtmlOut` | Extends `Out`; `write(Object)` HTML-escapes `& < > " '` — safe for user-supplied values in HTML |
 | `TextOut` | Extends `Out`; `write(Object)` writes `String.valueOf(value)` unescaped — for plain-text output |
+| `JavaOut` | Extends `Out`; verbatim `write(Object)`; `@OutSyntax(prefix = "%", interpolation = "${")` so Java annotations and `#{` in generated source need no escaping |
+| `@OutSyntax` | Annotation on an `Out` type declaring its default directive prefix and interpolation opener; read by the processor via `javax.lang.model`, `CLASS` retention, `@Inherited` |
 | `@ProcessTemplates` | Module-level annotation; marks a module as containing `.jt` files; `RetentionPolicy.SOURCE` |
 
 **Template syntax (`.jt` files):**
 ```
+out HtmlOut;
+
 package com.example;
 import java.util.List;
 
-template HtmlOut TasksTemplate(String title, List<String> items) {
+template TasksTemplate(String title, List<String> items) {
 <h1>#{title}</h1>
 <ul>
 @for (var item : items) {
@@ -803,11 +807,15 @@ template HtmlOut TasksTemplate(String title, List<String> items) {
 </ul>
 @end
 ```
+- The header is read in a fixed order: `out <Type>;` (required, must be first; the `Out` class, simple or qualified, the template writes to), then optional `option` lines, then optional `package` and `import` lines (which belong to the generated Java record; an omitted `package` is inferred from the file's directory under `src/main/jt`, and a declared one is checked against it), then `template Name(params) {`
 - A file holds exactly one template. The declaration must end with `{`, and the body must end with an `@end` line; anything after `@end` is an error
 - `#{expr}` — interpolated expression; calls `out.write(expr)`
-- `@<statement>` — raw Java code line emitted into `render()`
+- A line starting with `@` is a directive only when the word after it is in the closed set: `for if else while switch case default do try catch finally var final` (the line, minus `@`, is emitted as Java), `@}` (closing brace, may continue as `@} else {`), `@include`, `@java` and `@end`. Any other `@` line is plain text, so `@Override`, `@media` and `@click=...` need no escape. `fragment`, `endfragment`, `slot` and `flush` are reserved and rejected until implemented
+- `@java <statement>` — any other Java statement, emitted into `render()` (for example `@java out.raw(x);`)
 - `@include <expr>` — calls `<expr>.render(out)` for sub-template composition; the expression is required
-- `out` is an implicit variable inside `render`, so a code line can call it directly (`@out.raw(...);`)
+- `out` is an implicit variable inside `render`, so `@java` can call it directly (`@java out.raw(...);`)
+- Escapes: `@@` at the start of a line emits a literal `@` (for a text line that would otherwise be a directive); `##{` emits a literal `#{`
+- Delimiters are configurable per template with `option` lines immediately after the `out` declaration. They override the defaults the `Out` type declares with `@OutSyntax` (inherited by subclasses; `JavaOut` declares `%` and `${`; any `Out` without the annotation uses `@` and `#{`): `option prefix = "%";` replaces `@`, and `option interpolation = "${";` replaces `#{` (it must end with `{`). The escapes follow: the prefix doubled, and the interpolation's first character doubled (`$${`). Values are plain double-quoted strings and the prefix must not start with an identifier character
 - `package` / `import` / `import static` / `import static ... .*` all supported in header
 
 **Usage:**
@@ -828,7 +836,8 @@ String html = out.toString();
 | Type | Role |
 |---|---|
 | `TemplateProcessor` | `AbstractProcessor`; triggers on `@ProcessTemplates`; walks `src/main/jt/` |
-| `JtParser` | Two inner `AbstractParser` subclasses: `JtFileParser` (full file) and `TextLineParser` (one body line); parses header and body (text, `#{expr}`, `@code`, `@include`) |
+| `JtParser` | Two inner `AbstractParser` subclasses: `JtFileParser` (full file) and `TextLineParser` (one body line); parses header (including `option` lines) and body (text, `#{expr}`, directives, `@include`) |
+| `Syntax` | Record of the directive prefix and interpolation opener (default `@`, `#{`); owns the closed directive set |
 | `CodeGenerator` | Emits the Java record source; merges adjacent `RawText` nodes; escapes Java string literals |
 | `ParsedTemplate` | Record holding package, imports, outType, className, params, and `List<BodyNode>` |
 | `BodyNode` (sealed) | `RawText`, `Expression`, `CodeLine`, `Include` |

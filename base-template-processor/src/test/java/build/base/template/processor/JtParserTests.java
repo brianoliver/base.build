@@ -12,9 +12,10 @@ class JtParserTests {
     @Test
     void shouldParseMinimalTemplate() {
         final var result = JtParser.parse("""
+            out HtmlOut;
             package com.example;
 
-            template HtmlOut HelloTemplate(String name) {
+            template HelloTemplate(String name) {
             <h1>Hello</h1>
             @end
             """, "hello.jt");
@@ -26,14 +27,38 @@ class JtParserTests {
     }
 
     @Test
+    void shouldParseTemplateWithoutPackage() {
+        final var result = JtParser.parse("""
+            out TextOut;
+            template T() {
+            @end
+            """, "t.jt");
+
+        assertThat(result.packageName()).isEmpty();
+        assertThat(result.outType()).isEqualTo("TextOut");
+    }
+
+    @Test
+    void shouldParseQualifiedOutType() {
+        final var result = JtParser.parse("""
+            out com.acme.MyOut;
+            template T() {
+            @end
+            """, "t.jt");
+
+        assertThat(result.outType()).isEqualTo("com.acme.MyOut");
+    }
+
+    @Test
     void shouldParseImports() {
         final var result = JtParser.parse("""
+            out HtmlOut;
             package com.example;
 
             import java.util.List;
             import com.example.Task;
 
-            template HtmlOut TasksTemplate(List<Task> tasks) {
+            template TasksTemplate(List<Task> tasks) {
             @end
             """, "tasks.jt");
 
@@ -88,8 +113,9 @@ class JtParserTests {
     @Test
     void shouldParseCodeLine() {
         final var result = JtParser.parse("""
+            out HtmlOut;
             package com.example;
-            template HtmlOut T(java.util.List<String> items) {
+            template T(java.util.List<String> items) {
             @for (var item : items) {
             <li>#{item}</li>
             @}
@@ -102,8 +128,9 @@ class JtParserTests {
     @Test
     void shouldParseInclude() {
         final var result = JtParser.parse("""
+            out HtmlOut;
             package com.example;
-            template HtmlOut T(Object item) {
+            template T(Object item) {
             @include new ItemTemplate(item)
             @end
             """, "t.jt");
@@ -113,9 +140,10 @@ class JtParserTests {
     @Test
     void shouldParseWildcardImport() {
         final var result = JtParser.parse("""
+            out HtmlOut;
             package com.example;
             import java.util.*;
-            template HtmlOut T() {
+            template T() {
             @end
             """, "t.jt");
         assertThat(result.imports()).containsExactly("import java.util.*");
@@ -124,9 +152,10 @@ class JtParserTests {
     @Test
     void shouldParseStaticImport() {
         final var result = JtParser.parse("""
+            out HtmlOut;
             package com.example;
             import static java.util.List.of;
-            template HtmlOut T() {
+            template T() {
             @end
             """, "t.jt");
         assertThat(result.imports()).containsExactly("import static java.util.List.of");
@@ -135,9 +164,10 @@ class JtParserTests {
     @Test
     void shouldParseStaticWildcardImport() {
         final var result = JtParser.parse("""
+            out HtmlOut;
             package com.example;
             import static java.util.Collections.*;
-            template HtmlOut T() {
+            template T() {
             @end
             """, "t.jt");
         assertThat(result.imports()).containsExactly("import static java.util.Collections.*");
@@ -146,8 +176,9 @@ class JtParserTests {
     @Test
     void shouldPreserveBareClosingBraceInBody() {
         final var result = JtParser.parse("""
+            out HtmlOut;
             package com.example;
-            template HtmlOut T() {
+            template T() {
             <style>
             body {
                 color: red;
@@ -170,8 +201,58 @@ class JtParserTests {
 
     @Test
     void shouldThrowOnMissingDeclaration() {
-        assertThatThrownBy(() -> JtParser.parse("package com.example;", "bad.jt"))
+        assertThatThrownBy(() -> JtParser.parse("out HtmlOut;\npackage com.example;", "bad.jt"))
             .isInstanceOf(JtParseException.class)
             .hasMessageContaining("missing template declaration");
+    }
+
+    @Test
+    void shouldThrowOnMissingOutDeclaration() {
+        assertThatThrownBy(() -> JtParser.parse("""
+            package com.example;
+            template T() {
+            @end
+            """, "bad.jt"))
+            .isInstanceOf(JtParseException.class)
+            .hasMessageContaining("missing 'out' declaration")
+            .hasMessageContaining("line 1");
+    }
+
+    @Test
+    void shouldRejectOutDeclarationAfterPackage() {
+        assertThatThrownBy(() -> JtParser.parse("""
+            package com.example;
+            out HtmlOut;
+            template T() {
+            @end
+            """, "bad.jt"))
+            .isInstanceOf(JtParseException.class)
+            .hasMessageContaining("missing 'out' declaration");
+    }
+
+    @Test
+    void shouldRejectOptionBeforeOutDeclaration() {
+        assertThatThrownBy(() -> JtParser.parse("""
+            option prefix = "%";
+            out HtmlOut;
+            template T() {
+            %end
+            """, "bad.jt"))
+            .isInstanceOf(JtParseException.class)
+            .hasMessageContaining("missing 'out' declaration");
+    }
+
+    @Test
+    void shouldRejectOptionAfterPackage() {
+        assertThatThrownBy(() -> JtParser.parse("""
+            out HtmlOut;
+            package com.example;
+            option prefix = "%";
+            template T() {
+            @end
+            """, "bad.jt"))
+            .isInstanceOf(JtParseException.class)
+            .hasMessageContaining("'option' must come directly after the 'out' declaration")
+            .hasMessageContaining("line 3");
     }
 }

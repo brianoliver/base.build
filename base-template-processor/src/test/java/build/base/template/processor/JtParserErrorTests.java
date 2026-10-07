@@ -14,8 +14,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class JtParserErrorTests {
 
     private static final String HEADER = """
+        out HtmlOut;
         package com.example;
-        template HtmlOut T(String name) {
+        template T(String name) {
         """;
 
     // --- 1.1: messages and positions ---
@@ -43,33 +44,36 @@ class JtParserErrorTests {
     @Test
     void missingSemicolonAfterPackageReportsPosition() {
         assertThatThrownBy(() -> JtParser.parse("""
+            out HtmlOut;
             package com.example
-            template HtmlOut T() {
+            template T() {
             @end
             """, "hello.jt"))
             .isInstanceOf(JtParseException.class)
             .hasMessageContaining("hello.jt")
-            .hasMessageContaining("line 2")
+            .hasMessageContaining("line 3")
             .satisfies(e -> assertThat(e.getMessage()).doesNotContain("null"));
     }
 
     @Test
     void malformedHeaderReportsPosition() {
         assertThatThrownBy(() -> JtParser.parse("""
+            out HtmlOut;
             package com.example;
-            template HtmlOut (String name) {
+            template (String name) {
             @end
             """, "hello.jt"))
             .isInstanceOf(JtParseException.class)
-            .hasMessageContaining("line 2")
+            .hasMessageContaining("line 3")
             .satisfies(e -> assertThat(e.getMessage()).doesNotContain("null"));
     }
 
     @Test
     void unbalancedParametersAreReported() {
         assertThatThrownBy(() -> JtParser.parse("""
+            out HtmlOut;
             package com.example;
-            template HtmlOut T(String name {
+            template T(String name {
             <p>hi</p>
             @end
             """, "hello.jt"))
@@ -91,7 +95,7 @@ class JtParserErrorTests {
         assertThatThrownBy(() -> JtParser.parse(HEADER + """
             <p>hi</p>
             @end
-            template HtmlOut Second() {
+            template Second() {
             <p>second</p>
             @end
             """, "t.jt"))
@@ -101,8 +105,9 @@ class JtParserErrorTests {
     @Test
     void missingOpeningBraceIsAnError() {
         assertThatThrownBy(() -> JtParser.parse("""
+            out HtmlOut;
             package com.example;
-            template HtmlOut T()
+            template T()
             <p>hi</p>
             @end
             """, "t.jt"))
@@ -113,8 +118,9 @@ class JtParserErrorTests {
     @Test
     void garbageAfterParametersIsAnError() {
         assertThatThrownBy(() -> JtParser.parse("""
+            out HtmlOut;
             package com.example;
-            template HtmlOut T() garbage {
+            template T() garbage {
             <p>hi</p>
             @end
             """, "t.jt"))
@@ -162,8 +168,9 @@ class JtParserErrorTests {
     @Test
     void crlfTemplateParsesDirectivesAndKeepsTextLineEndings() {
         final var result = JtParser.parse(
-            "package com.example;\r\n"
-            + "template HtmlOut T(java.util.List<String> xs) {\r\n"
+            "out HtmlOut;\r\n"
+            + "package com.example;\r\n"
+            + "template T(java.util.List<String> xs) {\r\n"
             + "<p>hi</p>\r\n"
             + "@for (var x : xs) {\r\n"
             + "@}\r\n"
