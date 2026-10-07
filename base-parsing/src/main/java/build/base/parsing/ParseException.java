@@ -111,11 +111,20 @@ public class ParseException
         return this.found;
     }
 
+    /**
+     * Obtains a description of what was expected, what was found and, when known, where, for example
+     * {@code Expected [;] but found [template] at line 2, column 1}.
+     *
+     * @return the message, never {@code null}
+     */
+    @Override
+    public String getMessage() {
+        return "Expected [" + this.expected + "] but found [" + this.found + "]"
+            + this.location.map(l -> " at line " + l.getLine() + ", column " + l.getColumn()).orElse("");
+    }
+
     @Override
     public String toString() {
-        return "Parser Exception "
-            + this.location.map(l -> "@ " + l + ". ").orElse("")
-            + "Expected=[" + this.expected + "], "
-            + "Found=[" + this.found + "]";
+        return "Parser Exception: " + getMessage();
     }
 }

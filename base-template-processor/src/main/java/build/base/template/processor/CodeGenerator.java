@@ -41,7 +41,10 @@ final class CodeGenerator {
             sb.append("\n");
         }
 
-        sb.append("import build.base.template.").append(template.outType()).append(";\n");
+        // A qualified out type is imported as written; a simple one resolves against build.base.template
+        sb.append("import ")
+            .append(template.outType().contains(".") ? "" : "build.base.template.")
+            .append(template.outType()).append(";\n");
         sb.append("import build.base.template.Template;\n\n");
 
         sb.append("public record ").append(template.className())

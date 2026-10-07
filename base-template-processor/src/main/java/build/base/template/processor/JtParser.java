@@ -20,6 +20,7 @@ package build.base.template.processor;
  * #L%
  */
 
+import build.base.io.LookaheadReader;
 import build.base.parsing.AbstractParser;
 import build.base.parsing.ParseException;
 
@@ -43,22 +44,31 @@ final class JtParser {
         return new JtFileParser(content, sourceFile).run();
     }
 
-    private static void parseBodyLine(final String line, final List<BodyNode> body) {
+    private static void parseBodyLine(final String line,
+                                      final List<BodyNode> body,
+                                      final String sourceFile,
+                                      final int lineNumber) {
         final String trimmed = line.trim();
-        if (trimmed.startsWith("@include ")) {
-            body.add(new BodyNode.Include(trimmed.substring("@include ".length()).trim()));
+        if (trimmed.equals("@include") || trimmed.startsWith("@include ")) {
+            final String expression = trimmed.substring("@include".length()).trim();
+            if (expression.isEmpty()) {
+                throw new JtParseException(
+                    sourceFile + ": @include requires an expression at line " + lineNumber + ", column 1",
+                    sourceFile, lineNumber, 1);
+            }
+            body.add(new BodyNode.Include(expression));
             return;
         }
         if (trimmed.startsWith("@")) {
             body.add(new BodyNode.CodeLine(trimmed.substring(1).trim()));
             return;
         }
-        body.addAll(new TextLineParser(line + "\n").run());
+        body.addAll(new TextLineParser(line + "\n", sourceFile, lineNumber).run());
     }
 
     /** Test-facing entry point: parse a single text line, appending the resulting nodes to {@code body}. */
     static void parseTextLine(final String line, final List<BodyNode> body) {
-        body.addAll(new TextLineParser(line).run());
+        body.addAll(new TextLineParser(line, null, 1).run());
     }
 
     /**
@@ -117,33 +127,53 @@ final class JtParser {
             skip();
             final String params = scanner.consumeBalanced('(', ')');
 
-            // Drain the remainder of the template declaration line (e.g. " {")
-            while (scanner.hasNext() && scanner.peekChar() != '\n') {
-                scanner.consumeChar();
-            }
-            if (scanner.follows('\n')) {
-                scanner.consumeChar();
+            // The declaration must end with "{", and nothing else may follow it on that line
+            scanner.skipWhile(c -> c == ' ' || c == '\t');
+            expect("{");
+            if (scanner.hasNext()) {
+                final var location = scanner.getLocation();
+                final String trailing = scanner.consumeUntil("\n");
+                if (!trailing.isBlank()) {
+                    throw error("unexpected content after '{' in template declaration", location);
+                }
+                if (scanner.follows('\n')) {
+                    scanner.consumeChar();
+                }
             }
 
             // Parse body lines until @end
             final List<BodyNode> body = new ArrayList<>();
+            boolean ended = false;
             while (scanner.hasNext()) {
+                final int lineNumber = scanner.getLocation().getLine();
                 final String line = scanner.consumeUntil("\n");
                 if (scanner.follows('\n')) {
                     scanner.consumeChar();
                 }
                 if (line.trim().equals("@end")) {
+                    ended = true;
                     break;
                 }
-                parseBodyLine(line, body);
+                parseBodyLine(line, body, sourceFile, lineNumber);
+            }
+            if (!ended) {
+                throw error("missing @end for template " + className, scanner.getLocation());
             }
 
-            // Drain any content after @end so AbstractParser's full-consumption check passes
-            while (scanner.hasNext()) {
-                scanner.consumeChar();
+            // A file holds exactly one template, so only whitespace may follow @end
+            skip();
+            if (scanner.hasNext()) {
+                throw error("unexpected content after @end (a file may contain only one template)",
+                            scanner.getLocation());
             }
 
             return new ParsedTemplate(packageName, imports, outType, className, params, body);
+        }
+
+        private JtParseException error(final String message, final LookaheadReader.Location location) {
+            return new JtParseException(
+                sourceFile + ": " + message + " at line " + location.getLine() + ", column " + location.getColumn(),
+                sourceFile, location.getLine(), location.getColumn());
         }
 
         /** Skips whitespace (including newlines) between header tokens. */
@@ -153,7 +183,9 @@ final class JtParser {
 
         @Override
         protected RuntimeException translate(final ParseException cause) {
-            return new JtParseException(sourceFile + ": " + cause.getMessage());
+            final int line = cause.getLocation().map(LookaheadReader.Location::getLine).orElse(0);
+            final int column = cause.getLocation().map(LookaheadReader.Location::getColumn).orElse(0);
+            return new JtParseException(sourceFile + ": " + cause.getMessage(), sourceFile, line, column);
         }
     }
 
@@ -164,8 +196,17 @@ final class JtParser {
     private static final class TextLineParser
         extends AbstractParser<List<BodyNode>> {
 
-        TextLineParser(final String input) {
+        private final String sourceFile;
+        private final int lineNumber;
+
+        /**
+         * @param sourceFile the file the line came from, or {@code null} when parsing a bare line
+         * @param lineNumber the one-based line number of the line within the file
+         */
+        TextLineParser(final String input, final String sourceFile, final int lineNumber) {
             super(input);
+            this.sourceFile = sourceFile;
+            this.lineNumber = lineNumber;
         }
 
         @Override
@@ -178,8 +219,9 @@ final class JtParser {
             final List<BodyNode> nodes = new ArrayList<>();
             while (scanner.hasNext()) {
                 if (scanner.follows("#{")) {
+                    final var start = scanner.getLocation();
                     scanner.consume("#");
-                    nodes.add(new BodyNode.Expression(scanner.consumeBalanced('{', '}')));
+                    nodes.add(new BodyNode.Expression(consumeExpression(start)));
                 } else {
                     final String raw = scanner.consumeUntil("#{");
                     if (!raw.isEmpty()) {
@@ -190,9 +232,60 @@ final class JtParser {
             return nodes;
         }
 
+        /**
+         * Consumes a {@code {...}} expression and returns its content, honouring Java string and character
+         * literals and comments so that a {@code }} inside them does not end the expression.
+         */
+        private String consumeExpression(final LookaheadReader.Location start) {
+            scanner.consume("{");
+            final StringBuilder expression = new StringBuilder();
+            int depth = 1;
+            while (scanner.hasNext()) {
+                final char c = scanner.consumeChar();
+                if (c == '"' || c == '\'') {
+                    expression.append(c);
+                    while (scanner.hasNext()) {
+                        final char literal = scanner.consumeChar();
+                        expression.append(literal);
+                        if (literal == '\\' && scanner.hasNext()) {
+                            expression.append(scanner.consumeChar());
+                        } else if (literal == c) {
+                            break;
+                        }
+                    }
+                } else if (c == '/' && scanner.follows('*')) {
+                    expression.append(c).append(scanner.consumeChar());
+                    while (scanner.hasNext() && !scanner.follows("*/")) {
+                        expression.append(scanner.consumeChar());
+                    }
+                    if (scanner.hasNext()) {
+                        expression.append(scanner.consume("*/"));
+                    }
+                } else if (c == '/' && scanner.follows('/')) {
+                    expression.append(c);
+                    while (scanner.hasNext() && !scanner.follows('\n')) {
+                        expression.append(scanner.consumeChar());
+                    }
+                } else if (c == '{') {
+                    depth++;
+                    expression.append(c);
+                } else if (c == '}' && --depth == 0) {
+                    return expression.toString();
+                } else {
+                    expression.append(c);
+                }
+            }
+            throw new ParseException(start, "}", "<end of line>");
+        }
+
         @Override
         protected RuntimeException translate(final ParseException cause) {
-            return new JtParseException("Unclosed expression: " + cause.getMessage());
+            // The scanner's location is relative to this single line, so only its column is meaningful
+            final int column = cause.getLocation().map(LookaheadReader.Location::getColumn).orElse(1);
+            return new JtParseException(
+                (sourceFile == null ? "" : sourceFile + ": ")
+                + "unclosed '#{' expression at line " + lineNumber + ", column " + column,
+                sourceFile, lineNumber, column);
         }
     }
 }
