@@ -28,12 +28,14 @@ import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.StringJoiner;
 import java.util.stream.Stream;
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.RoundEnvironment;
 import javax.annotation.processing.SupportedAnnotationTypes;
 import javax.annotation.processing.SupportedOptions;
 import javax.lang.model.SourceVersion;
+import javax.lang.model.element.AnnotationMirror;
 import javax.lang.model.element.TypeElement;
 import javax.tools.Diagnostic;
 import javax.tools.StandardLocation;
@@ -89,7 +91,14 @@ public final class TemplateProcessor extends AbstractProcessor {
      */
     private void processTemplate(final Path jtSourceDir, final Path jtFile) {
         try {
-            final ParsedTemplate parsed = JtParser.parse(Files.readString(jtFile), jtFile.toString());
+            final ParsedTemplate declared = JtParser.parse(Files.readString(jtFile), jtFile.toString(),
+                                                           this::outSyntax,
+                                                           message -> processingEnv.getMessager()
+                                                               .printMessage(Diagnostic.Kind.WARNING,
+                                                                             "base-template-processor: " + message));
+            final ParsedTemplate parsed = declared.packageName().isEmpty()
+                ? declared.withPackageName(packageOf(jtSourceDir, jtFile))
+                : declared;
             final String className = parsed.qualifiedClassName();
 
             final Path existing = generated.get(className);
@@ -113,6 +122,53 @@ public final class TemplateProcessor extends AbstractProcessor {
         } catch (final JtParseException e) {
             error(e.getMessage());
         }
+    }
+
+    /** The package implied by a template's directory under the source root, used when it declares none. */
+    private static String packageOf(final Path jtSourceDir, final Path jtFile) {
+        final Path directory = jtSourceDir.relativize(jtFile).getParent();
+        if (directory == null) {
+            return "";
+        }
+        final StringJoiner name = new StringJoiner(".");
+        directory.forEach(part -> name.add(part.toString()));
+        return name.toString();
+    }
+
+    /**
+     * The default syntax declared by an out type through {@code build.base.template.OutSyntax}, or
+     * {@link Syntax#DEFAULT} when the type is not found or declares none. A simple name resolves against
+     * {@code build.base.template}.
+     */
+    private Syntax outSyntax(final String outType) {
+        final var elements = processingEnv.getElementUtils();
+        final TypeElement type = elements.getTypeElement(
+            outType.contains(".") ? outType : "build.base.template." + outType);
+        if (type == null) {
+            processingEnv.getMessager().printMessage(
+                Diagnostic.Kind.WARNING,
+                "out type " + outType + " not found; using the default template syntax");
+            return Syntax.DEFAULT;
+        }
+        // getAllAnnotationMirrors includes annotations inherited from superclasses
+        for (final AnnotationMirror mirror : elements.getAllAnnotationMirrors(type)) {
+            final TypeElement annotation = (TypeElement) mirror.getAnnotationType().asElement();
+            if (annotation.getQualifiedName().contentEquals("build.base.template.OutSyntax")) {
+                String prefix = Syntax.DEFAULT.prefix();
+                String interpolation = Syntax.DEFAULT.interpolation();
+                for (final var entry : elements.getElementValuesWithDefaults(mirror).entrySet()) {
+                    final String value = (String) entry.getValue().getValue();
+                    switch (entry.getKey().getSimpleName().toString()) {
+                        case "prefix" -> prefix = value;
+                        case "interpolation" -> interpolation = value;
+                        default -> {
+                        }
+                    }
+                }
+                return new Syntax(prefix, interpolation);
+            }
+        }
+        return Syntax.DEFAULT;
     }
 
     private void warnIfPathDoesNotMatchPackage(final Path jtSourceDir,

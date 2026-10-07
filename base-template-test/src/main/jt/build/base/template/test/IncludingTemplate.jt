@@ -1,6 +1,8 @@
+out HtmlOut;
+
 package build.base.template.test;
 
-template HtmlOut IncludingTemplate(String label) {
+template IncludingTemplate(String label) {
 <ul>
 @include new ItemTemplate(label, true)
 @include new ItemTemplate("<b>other</b>", false)

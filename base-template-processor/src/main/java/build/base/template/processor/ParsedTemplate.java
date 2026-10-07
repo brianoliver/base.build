@@ -29,6 +29,10 @@ record ParsedTemplate(String packageName,
                       String params,
                       List<BodyNode> body
 ) {
+    ParsedTemplate withPackageName(final String packageName) {
+        return new ParsedTemplate(packageName, imports, outType, className, params, body);
+    }
+
     String qualifiedClassName() {
         return packageName.isEmpty() ? className : packageName + "." + className;
     }

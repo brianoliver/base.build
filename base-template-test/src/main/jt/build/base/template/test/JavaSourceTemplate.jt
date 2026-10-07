@@ -1,0 +1,13 @@
+out JavaOut;
+
+import java.util.List;
+
+template JavaSourceTemplate(String name, List<String> fields) {
+public class ${name} {
+%for (var field : fields) {
+    @Deprecated
+    @SuppressWarnings("#{unused}")
+    private String ${field};
+%}
+}
+%end

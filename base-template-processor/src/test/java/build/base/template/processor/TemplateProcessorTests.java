@@ -34,9 +34,10 @@ class TemplateProcessorTests {
     void shouldCompileTemplateUsingOutFromAnotherPackage(@TempDir final Path dir) throws IOException {
         final var result = ProcessorHarness.run(dir,
             Map.of("com/acme/Greeting.jt", """
+                out com.acme.MyOut;
                 package com.acme;
 
-                template com.acme.MyOut Greeting(String name) {
+                template Greeting(String name) {
                 hello #{name}
                 @end
                 """),
@@ -47,10 +48,69 @@ class TemplateProcessorTests {
     }
 
     @Test
+    void shouldInferPackageFromDirectoryWhenNoneDeclared(@TempDir final Path dir) throws IOException {
+        final var result = ProcessorHarness.run(dir,
+            Map.of("com/acme/Inferred.jt", "out HtmlOut;\ntemplate Inferred() {\n<p>x</p>\n@end\n"),
+            Map.of());
+
+        assertThat(result.success()).as(result.allMessages()).isTrue();
+        assertThat(result.classes().resolve("com/acme/Inferred.class")).exists();
+        assertThat(result.diagnostics()).noneSatisfy(d -> assertThat(d.getMessage(null)).contains("Inferred.jt"));
+    }
+
+    @Test
+    void shouldReadDefaultSyntaxFromOutSyntaxAnnotationAndInheritIt(@TempDir final Path dir) throws IOException {
+        final var result = ProcessorHarness.run(dir,
+            Map.of("com/acme/Greeting.jt", """
+                out com.acme.ChildOut;
+                template Greeting(String name) {
+                @Keep ${name}
+                %java out.raw("!");
+                %end
+                """),
+            Map.of("com/acme/PctOut.java", """
+                    package com.acme;
+
+                    @build.base.template.OutSyntax(prefix = "%", interpolation = "${")
+                    public class PctOut extends build.base.template.Out {
+                        @Override
+                        public void write(final Object value) {
+                            raw(String.valueOf(value));
+                        }
+                    }
+                    """,
+                "com/acme/ChildOut.java", "package com.acme;\npublic final class ChildOut extends PctOut {}\n"));
+
+        assertThat(result.success()).as(result.allMessages()).isTrue();
+        assertThat(java.nio.file.Files.readString(result.generated().resolve("com/acme/Greeting.java")))
+            .contains("out.write(name)")
+            .contains("@Keep ");
+    }
+
+    @Test
+    void shouldWarnWhenOutTypeIsNotFoundAndFallBackToDefaultSyntax(@TempDir final Path dir) throws IOException {
+        final var result = ProcessorHarness.run(dir,
+            Map.of("com/acme/Greeting.jt", """
+                out com.acme.Missing;
+                template Greeting() {
+                <p>hi</p>
+                @end
+                """),
+            Map.of());
+
+        assertThat(result.messages(Diagnostic.Kind.WARNING))
+            .anySatisfy(m -> assertThat(m).contains("com.acme.Missing").contains("default template syntax"));
+        // The template is still generated with the default syntax; javac then rejects the unresolved import
+        assertThat(result.generated().resolve("com/acme/Greeting.java")).exists();
+        assertThat(result.success()).isFalse();
+    }
+
+    @Test
     void shouldImportQualifiedOutTypeAsWritten() {
         final var source = CodeGenerator.generate(JtParser.parse("""
+            out com.acme.MyOut;
             package com.example;
-            template com.acme.MyOut T() {
+            template T() {
             @end
             """, "t.jt"));
 
@@ -70,9 +130,10 @@ class TemplateProcessorTests {
     void shouldReportParseErrorWithRealMessage(@TempDir final Path dir) throws IOException {
         final var result = ProcessorHarness.run(dir,
             Map.of("com/acme/Broken.jt", """
+                out HtmlOut;
                 package com.acme;
 
-                template HtmlOut Broken(String name) {
+                template Broken(String name) {
                 <p>#{name</p>
                 @end
                 """),
@@ -86,9 +147,10 @@ class TemplateProcessorTests {
     @Test
     void shouldReportDuplicateClassNamesAsErrorsNamingBothFiles(@TempDir final Path dir) throws IOException {
         final var template = """
+            out HtmlOut;
             package com.acme;
 
-            template HtmlOut Dup() {
+            template Dup() {
             <p>dup</p>
             @end
             """;
@@ -105,8 +167,8 @@ class TemplateProcessorTests {
     @Test
     void shouldKeepProcessingOtherTemplatesAfterOneFails(@TempDir final Path dir) throws IOException {
         final var result = assertThatCodeRuns(dir, Map.of(
-            "a/Bad.jt", "package com.acme;\n\ntemplate HtmlOut Bad() {\n<p>#{oops</p>\n@end\n",
-            "b/Good.jt", "package com.acme;\n\ntemplate HtmlOut Good() {\n<p>ok</p>\n@end\n"));
+            "a/Bad.jt", "out HtmlOut;\npackage com.acme;\n\ntemplate Bad() {\n<p>#{oops</p>\n@end\n",
+            "b/Good.jt", "out HtmlOut;\npackage com.acme;\n\ntemplate Good() {\n<p>ok</p>\n@end\n"));
 
         assertThat(result.messages(Diagnostic.Kind.ERROR)).anySatisfy(m -> assertThat(m).contains("Bad.jt"));
         assertThat(result.generated().resolve("com/acme/Good.java")).exists();
@@ -115,7 +177,7 @@ class TemplateProcessorTests {
     @Test
     void shouldFlagTemplateWhosePathDoesNotMatchItsPackage(@TempDir final Path dir) throws IOException {
         final var result = ProcessorHarness.run(dir,
-            Map.of("wrong/place/Foo.jt", "package com.acme;\n\ntemplate HtmlOut Foo() {\n<p>x</p>\n@end\n"),
+            Map.of("wrong/place/Foo.jt", "out HtmlOut;\npackage com.acme;\n\ntemplate Foo() {\n<p>x</p>\n@end\n"),
             Map.of());
 
         assertThat(result.diagnostics())
@@ -125,7 +187,7 @@ class TemplateProcessorTests {
     @Test
     void shouldNotFlagTemplateWhosePathMatchesItsPackage(@TempDir final Path dir) throws IOException {
         final var result = ProcessorHarness.run(dir,
-            Map.of("com/acme/Foo.jt", "package com.acme;\n\ntemplate HtmlOut Foo() {\n<p>x</p>\n@end\n"),
+            Map.of("com/acme/Foo.jt", "out HtmlOut;\npackage com.acme;\n\ntemplate Foo() {\n<p>x</p>\n@end\n"),
             Map.of());
 
         assertThat(result.success()).as(result.allMessages()).isTrue();

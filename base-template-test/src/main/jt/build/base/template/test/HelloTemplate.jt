@@ -1,6 +1,8 @@
+out HtmlOut;
+
 package build.base.template.test;
 
-template HtmlOut HelloTemplate(String name) {
+template HelloTemplate(String name) {
 <!DOCTYPE html>
 <html>
 <body>
