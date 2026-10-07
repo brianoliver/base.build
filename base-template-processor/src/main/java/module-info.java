@@ -22,6 +22,7 @@
  */
 module build.base.template.processor {
     requires java.compiler;
+    requires build.base.io;
     requires build.base.parsing;
 
     provides javax.annotation.processing.Processor

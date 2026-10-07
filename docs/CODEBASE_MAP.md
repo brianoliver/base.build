@@ -96,7 +96,6 @@ graph TB
     TAR --> ARCH
     TEL --> TELF
     TELF --> TELA
-    TMPLP --> TMPL
     TMPLP --> PARSE
     RETRY --> ASSERT
     PARSE --> EXPR
@@ -785,7 +784,7 @@ Optional<Path<String>> path = Graphs.shortestPath(g, "A", "C");
 | Type | Role |
 |---|---|
 | `Template<O extends Out>` | `@FunctionalInterface`; one method: `render(O out)` |
-| `Out` | Abstract output sink; `raw(String)` writes unescaped; buffers to `StringBuilder` or streams to `Writer` |
+| `Out` | Abstract output sink; `raw(String)` writes unescaped; buffers to `StringBuilder` or streams to `Writer`; `content()` returns the buffer and throws `IllegalStateException` when Writer-backed (`toString()` returns `""` in that case) |
 | `HtmlOut` | Extends `Out`; `write(Object)` HTML-escapes `& < > " '` — safe for user-supplied values in HTML |
 | `TextOut` | Extends `Out`; `write(Object)` writes `String.valueOf(value)` unescaped — for plain-text output |
 | `@ProcessTemplates` | Module-level annotation; marks a module as containing `.jt` files; `RetentionPolicy.SOURCE` |
@@ -802,11 +801,13 @@ template HtmlOut TasksTemplate(String title, List<String> items) {
   <li>#{item}</li>
 @}
 </ul>
-}
+@end
 ```
+- A file holds exactly one template. The declaration must end with `{`, and the body must end with an `@end` line; anything after `@end` is an error
 - `#{expr}` — interpolated expression; calls `out.write(expr)`
 - `@<statement>` — raw Java code line emitted into `render()`
-- `@include <expr>` — calls `<expr>.render(out)` for sub-template composition
+- `@include <expr>` — calls `<expr>.render(out)` for sub-template composition; the expression is required
+- `out` is an implicit variable inside `render`, so a code line can call it directly (`@out.raw(...);`)
 - `package` / `import` / `import static` / `import static ... .*` all supported in header
 
 **Usage:**
@@ -832,7 +833,7 @@ String html = out.toString();
 | `ParsedTemplate` | Record holding package, imports, outType, className, params, and `List<BodyNode>` |
 | `BodyNode` (sealed) | `RawText`, `Expression`, `CodeLine`, `Include` |
 
-**Source root:** defaults to `<classOutput>/../../src/main/jt`; override with `-Ajt.sourceDir=<path>` for non-standard layouts.
+**Source root:** found by walking up the parent directories of the class output directory until one contains `src/main/jt`; override with `-Ajt.sourceDir=<path>` for non-standard layouts.
 
 **Maven setup:**
 ```xml
@@ -845,7 +846,9 @@ String html = out.toString();
 </annotationProcessorPaths>
 ```
 
-**Dependencies:** `base-parsing`, `java.compiler`.
+**Diagnostics:** parse failures, duplicate generated class names and I/O failures are reported as compiler errors naming the `.jt` file (line and column where known), and the remaining templates are still processed. A template whose directory does not match its `package` produces a warning.
+
+**Dependencies:** `base-io`, `base-parsing`, `java.compiler`.
 
 ---
 

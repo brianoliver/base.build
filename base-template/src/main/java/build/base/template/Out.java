@@ -53,6 +53,23 @@ public abstract class Out {
 
     public abstract void write(Object value);
 
+    /**
+     * Obtains everything written so far.
+     *
+     * @return the buffered output
+     * @throws IllegalStateException if this {@link Out} writes to a {@link Writer} and so retains no content
+     */
+    public final String content() {
+        if (buffer == null) {
+            throw new IllegalStateException("This Out is backed by a Writer and does not retain its content");
+        }
+        return buffer.toString();
+    }
+
+    /**
+     * Obtains the buffered output, or an empty {@link String} when this {@link Out} is backed by a {@link Writer}
+     * (which retains nothing). Prefer {@link #content()}, which fails loudly in that case.
+     */
     @Override
     public final String toString() {
         return buffer != null ? buffer.toString() : "";

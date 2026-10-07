@@ -56,7 +56,7 @@ public interface Filter
         if (input.follows("/*")) {
             input.consume(2);
 
-            while (!input.follows("*/")) {
+            while (input.available() && !input.follows("*/")) {
                 input.skip(1);
             }
 

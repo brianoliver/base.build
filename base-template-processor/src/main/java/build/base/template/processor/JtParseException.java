@@ -20,8 +20,38 @@ package build.base.template.processor;
  * #L%
  */
 
+/**
+ * Thrown when a {@code .jt} file is malformed.
+ * <p>
+ * The {@link #getLine() line} and {@link #getColumn() column} are one-based, or {@code 0} when unknown.
+ */
 final class JtParseException extends RuntimeException {
+
+    private final String file;
+    private final int line;
+    private final int column;
+
     JtParseException(final String message) {
+        this(message, null, 0, 0);
+    }
+
+    JtParseException(final String message, final String file, final int line, final int column) {
         super(message);
+        this.file = file;
+        this.line = line;
+        this.column = column;
+    }
+
+    /** The {@code .jt} file in which the error occurred, or {@code null} when unknown. */
+    String getFile() {
+        return file;
+    }
+
+    int getLine() {
+        return line;
+    }
+
+    int getColumn() {
+        return column;
     }
 }

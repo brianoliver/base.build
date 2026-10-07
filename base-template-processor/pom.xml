@@ -19,9 +19,18 @@
     <dependencies>
         <dependency>
             <groupId>build.base</groupId>
+            <artifactId>base-io</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>build.base</groupId>
             <artifactId>base-parsing</artifactId>
         </dependency>
 
+        <dependency>
+            <groupId>build.base</groupId>
+            <artifactId>base-template</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-api</artifactId>
@@ -33,4 +42,19 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <configuration>
+                    <ignoredUnusedDeclaredDependencies>
+                        <!-- Only on the module path of the javac invocations in TemplateProcessorTests -->
+                        <ignoredUnusedDeclaredDependency>build.base:base-template</ignoredUnusedDeclaredDependency>
+                    </ignoredUnusedDeclaredDependencies>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>

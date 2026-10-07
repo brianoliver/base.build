@@ -49,7 +49,7 @@ class HtmlOutTests {
     }
 
     @Test
-    void shouldInterleavRawAndWrite() {
+    void shouldInterleaveRawAndWrite() {
         final var out = new HtmlOut();
         out.raw("<li>");
         out.write("<b>bold</b>");
