@@ -77,6 +77,20 @@ final class JtParser {
         return new JtFileParser(content, sourceFile, outSyntax, warnings).run();
     }
 
+    /**
+     * Parses a template like {@link #parse(String, String, Function, Consumer)}, but reports every error instead of
+     * the first. A malformed body line is reported and parsing continues with the next line; a malformed header, a
+     * missing end or content after it ends the parse, after the errors found before it.
+     *
+     * @return the outcome, whose errors are all {@link JtParseException}s
+     */
+    static AbstractParser.Outcome<ParsedTemplate> parseAll(final String content,
+                                                           final String sourceFile,
+                                                           final Function<String, Syntax> outSyntax,
+                                                           final Consumer<String> warnings) {
+        return new JtFileParser(content, sourceFile, outSyntax, warnings).runRecovering();
+    }
+
     private static void parseBodyLine(final String line,
                                       final List<BodyNode> body,
                                       final String sourceFile,
@@ -194,6 +208,17 @@ final class JtParser {
 
         @Override
         protected ParsedTemplate parse() {
+            try {
+                return parseTemplate();
+            } catch (final JtParseException e) {
+                // Whatever follows an error that cannot be recovered from is not worth reporting on
+                reportTranslated(e);
+                scanner.skipWhile(c -> true);
+                return null;
+            }
+        }
+
+        private ParsedTemplate parseTemplate() {
             String packageName = "";
             final List<String> imports = new ArrayList<>();
 
@@ -278,7 +303,11 @@ final class JtParser {
                     ended = true;
                     break;
                 }
-                parseBodyLine(line, body, sourceFile, lineNumber, syntax, warnings);
+                try {
+                    parseBodyLine(line, body, sourceFile, lineNumber, syntax, warnings);
+                } catch (final JtParseException e) {
+                    reportTranslated(e);
+                }
                 while (lines.size() < body.size()) {
                     lines.add(lineNumber);
                 }

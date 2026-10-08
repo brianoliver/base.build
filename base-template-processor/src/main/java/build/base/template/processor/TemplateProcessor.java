@@ -96,11 +96,17 @@ public final class TemplateProcessor extends AbstractProcessor {
      */
     private void processTemplate(final Path jtSourceDir, final Path jtFile) {
         try {
-            final ParsedTemplate declared = JtParser.parse(Files.readString(jtFile), jtFile.toString(),
-                                                           this::outSyntax,
-                                                           message -> processingEnv.getMessager()
-                                                               .printMessage(Diagnostic.Kind.WARNING,
-                                                                             "base-template-processor: " + message));
+            final var outcome = JtParser.parseAll(Files.readString(jtFile), jtFile.toString(),
+                                                  this::outSyntax,
+                                                  message -> processingEnv.getMessager()
+                                                      .printMessage(Diagnostic.Kind.WARNING,
+                                                                    "base-template-processor: " + message));
+            if (!outcome.succeeded()) {
+                // Every error from JtParser.parseAll is a JtParseException
+                outcome.errors().forEach(e -> error(((JtParseException) e).diagnostic()));
+                return;
+            }
+            final ParsedTemplate declared = outcome.value().orElseThrow();
             final ParsedTemplate parsed = declared.packageName().isEmpty()
                 ? declared.withPackageName(packageOf(jtSourceDir, jtFile))
                 : declared;
