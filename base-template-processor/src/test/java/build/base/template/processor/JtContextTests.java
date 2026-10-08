@@ -9,7 +9,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Tests for named output contexts (6.3).
+ * Tests for named output contexts.
  *
  * @author reed.vonredwitz
  * @since Oct-2026

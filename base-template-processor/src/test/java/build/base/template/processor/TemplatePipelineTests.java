@@ -6,6 +6,10 @@ import java.io.IOException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * @author reed.vonredwitz
+ * @since Apr-2026
+ */
 class TemplatePipelineTests {
 
     private static String load(final String name) throws IOException {

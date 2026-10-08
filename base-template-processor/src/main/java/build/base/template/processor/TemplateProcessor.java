@@ -125,7 +125,7 @@ public final class TemplateProcessor extends AbstractProcessor {
         } catch (final IOException | UncheckedIOException e) {
             error(jtFile + ": failed to generate class: " + e.getMessage());
         } catch (final JtParseException e) {
-            error(e.getMessage());
+            error(e.diagnostic());
         }
     }
 

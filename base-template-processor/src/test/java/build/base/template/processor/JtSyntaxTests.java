@@ -8,7 +8,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Tests for the closed directive set (6.1), the escapes (1.6) and the configurable delimiters (6.4).
+ * Tests for the closed directive set, the escapes and the configurable delimiters.
  *
  * @author reed.vonredwitz
  * @since Oct-2026

@@ -10,6 +10,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * Error-path and edge-case tests for {@link JtParser}: messages must be informative (never {@code null}) and
  * malformed templates must be rejected rather than silently accepted.
+ *
+ * @author reed.vonredwitz
+ * @since Oct-2026
  */
 class JtParserErrorTests {
 
@@ -19,7 +22,7 @@ class JtParserErrorTests {
         template T(String name) {
         """;
 
-    // --- 1.1: messages and positions ---
+    // --- messages and positions ---
 
     @Test
     void unclosedExpressionHasInformativeMessage() {
@@ -81,7 +84,7 @@ class JtParserErrorTests {
             .satisfies(e -> assertThat(e.getMessage()).doesNotContain("null"));
     }
 
-    // --- 1.2: malformed templates must be rejected ---
+    // --- malformed templates must be rejected ---
 
     @Test
     void missingEndIsAnError() {
@@ -141,7 +144,7 @@ class JtParserErrorTests {
             .hasMessageContaining("@include");
     }
 
-    // --- 1.9: edge cases in expressions and line endings ---
+    // --- edge cases in expressions and line endings ---
 
     @Test
     void expressionStringLiteralMayContainClosingBrace() {
@@ -169,12 +172,12 @@ class JtParserErrorTests {
     void crlfTemplateParsesDirectivesAndKeepsTextLineEndings() {
         final var result = JtParser.parse(
             "out HtmlOut;\r\n"
-            + "package com.example;\r\n"
-            + "template T(java.util.List<String> xs) {\r\n"
-            + "<p>hi</p>\r\n"
-            + "@for (var x : xs) {\r\n"
-            + "@}\r\n"
-            + "@end\r\n", "t.jt");
+                + "package com.example;\r\n"
+                + "template T(java.util.List<String> xs) {\r\n"
+                + "<p>hi</p>\r\n"
+                + "@for (var x : xs) {\r\n"
+                + "@}\r\n"
+                + "@end\r\n", "t.jt");
 
         assertThat(result.params()).isEqualTo("java.util.List<String> xs");
         assertThat(result.body()).containsExactly(

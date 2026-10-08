@@ -47,6 +47,25 @@ final class JtParseException extends RuntimeException {
         return file;
     }
 
+    /**
+     * The message as {@code file:line:column: reason}, the form that IDEs and terminals make navigable, or just the
+     * message when the position is unknown.
+     */
+    String diagnostic() {
+        if (file == null || line <= 0) {
+            return getMessage();
+        }
+        String reason = getMessage();
+        if (reason.startsWith(file + ": ")) {
+            reason = reason.substring(file.length() + 2);
+        }
+        final String position = " at line " + line + ", column " + column;
+        if (reason.endsWith(position)) {
+            reason = reason.substring(0, reason.length() - position.length());
+        }
+        return file + ":" + line + ":" + column + ": " + reason;
+    }
+
     int getLine() {
         return line;
     }

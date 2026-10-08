@@ -266,6 +266,7 @@ final class JtParser {
 
             // Parse body lines until @end
             final List<BodyNode> body = new ArrayList<>();
+            final List<Integer> lines = new ArrayList<>();
             boolean ended = false;
             while (scanner.hasNext()) {
                 final int lineNumber = scanner.getLocation().getLine();
@@ -278,6 +279,9 @@ final class JtParser {
                     break;
                 }
                 parseBodyLine(line, body, sourceFile, lineNumber, syntax, warnings);
+                while (lines.size() < body.size()) {
+                    lines.add(lineNumber);
+                }
             }
             if (!ended) {
                 throw error("missing @end for template " + className, scanner.getLocation());
@@ -290,7 +294,7 @@ final class JtParser {
                             scanner.getLocation());
             }
 
-            return new ParsedTemplate(packageName, imports, outType, className, params, body);
+            return new ParsedTemplate(packageName, imports, outType, className, params, body, sourceFile, lines);
         }
 
         /**

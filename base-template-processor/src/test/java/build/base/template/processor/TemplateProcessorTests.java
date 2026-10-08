@@ -16,12 +16,15 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 /**
  * Drives the processor through {@code javac} to cover behaviour that cannot be tested from
  * {@code base-template-test} (a broken template would break that module's own build).
+ *
+ * @author reed.vonredwitz
+ * @since Oct-2026
  */
 class TemplateProcessorTests {
 
     private static final String MY_OUT = """
         package com.acme;
-
+        
         public final class MyOut extends build.base.template.Out {
             @Override
             public void write(final Object value) {
@@ -36,7 +39,7 @@ class TemplateProcessorTests {
             Map.of("com/acme/Greeting.jt", """
                 out com.acme.MyOut;
                 package com.acme;
-
+                
                 template Greeting(String name) {
                 hello #{name}
                 @end
@@ -70,7 +73,7 @@ class TemplateProcessorTests {
                 """),
             Map.of("com/acme/PctOut.java", """
                     package com.acme;
-
+                    
                     @build.base.template.OutSyntax(prefix = "%", interpolation = "${")
                     public class PctOut extends build.base.template.Out {
                         @Override
@@ -132,7 +135,7 @@ class TemplateProcessorTests {
             Map.of("com/acme/Broken.jt", """
                 out HtmlOut;
                 package com.acme;
-
+                
                 template Broken(String name) {
                 <p>#{name</p>
                 @end
@@ -149,7 +152,7 @@ class TemplateProcessorTests {
         final var template = """
             out HtmlOut;
             package com.acme;
-
+            
             template Dup() {
             <p>dup</p>
             @end

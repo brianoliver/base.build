@@ -6,6 +6,10 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * @author reed.vonredwitz
+ * @since Oct-2026
+ */
 class CodeGeneratorTests {
 
     @Test
