@@ -584,6 +584,31 @@ public class Scanner
     }
 
     /**
+     * Skips characters one at a time through the end of the next occurrence of the specified {@link String}, or to
+     * the end of input when there is none.
+     * <p>
+     * Unlike {@link #skipUntil(String)}, this works on the raw input: registered {@link Filter}s are not applied,
+     * so a delimiter such as a newline is found even when {@link Filter#WHITESPACE} is registered.  Advances
+     * unless the input is already exhausted.
+     * <p>
+     * Matching is performed using {@link String#equals(Object)}, which means matching is case-sensitive.
+     *
+     * @param string the non-empty {@link String} to skip past
+     */
+    public void skipPast(final String string) {
+        if (string == null || string.isEmpty()) {
+            throw new IllegalArgumentException("The string must not be null or empty");
+        }
+        final int first = string.charAt(0);
+        while (this.input.available() && !(this.input.peek() == first && this.input.follows(string))) {
+            this.input.consume();
+        }
+        if (this.input.follows(string)) {
+            this.input.consume(string.length());
+        }
+    }
+
+    /**
      * Skips characters one at a time until the type of value defined by the specified {@link Evaluator} matches,
      * leaving the matching content unconsumed.  Should the end of input be reached before the {@link Evaluator}
      * matches, all remaining content is skipped.

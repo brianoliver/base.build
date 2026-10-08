@@ -128,9 +128,10 @@ public class LookaheadReader
             // reallocate the buffer when it's not big enough to hold the desired number of characters
             if (desired > this.buffer.length) {
                 final var newBuffer = new char[desired];
-                System.arraycopy(this.buffer, 0, newBuffer, 0, this.buffer.length);
+                System.arraycopy(this.buffer, this.index, newBuffer, 0, remaining);
                 this.buffer = newBuffer;
                 this.index = 0;
+                this.length = remaining;
             }
 
             // shuffle the characters down when there's not enough space for the desired characters

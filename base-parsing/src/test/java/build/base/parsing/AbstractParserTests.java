@@ -4,6 +4,9 @@ import org.junit.jupiter.api.Test;
 
 import java.io.Reader;
 import java.io.StringReader;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -166,5 +169,259 @@ class AbstractParserTests {
             assertThatThrownBy(() -> s.consumeBalanced('{', '}'))
                 .isInstanceOf(ParseException.class);
         }
+    }
+
+    /**
+     * Parses {@code <ident> = <ident> ;} statements, recovering from a bad statement by skipping past its semicolon.
+     */
+    private static final class RecoveringParser extends AbstractParser<List<String>> {
+
+        private static final Pattern IDENT = Pattern.compile("[a-zA-Z_][a-zA-Z0-9_]*");
+
+        RecoveringParser(final String input) {
+            super(input);
+        }
+
+        RecoveringParser(final Reader input) {
+            super(input);
+        }
+
+        @Override
+        protected List<String> parse() {
+            final List<String> statements = new ArrayList<>();
+            while (scanner.hasNext()) {
+                try {
+                    final var lhs = expect(IDENT, "identifier");
+                    expect("=");
+                    final var rhs = expect(IDENT, "identifier");
+                    expect(";");
+                    statements.add(lhs + "=" + rhs);
+                } catch (final ParseException e) {
+                    report(e);
+                    skipPast(";");
+                }
+            }
+            return statements;
+        }
+
+        void reportOutsideParse() {
+            reportTranslated(new DemoException("late", null));
+        }
+
+        @Override
+        protected RuntimeException translate(final ParseException cause) {
+            return new DemoException("parse failed: " + cause.getMessage(), cause);
+        }
+    }
+
+    @Test
+    void runRecoveringReturnsEveryErrorAndThePartialValue() {
+        final var outcome = new RecoveringParser("a=b; c+d; e=f; g=; h=i;").runRecovering();
+
+        assertThat(outcome.succeeded()).isFalse();
+        assertThat(outcome.value().orElseThrow()).containsExactly("a=b", "e=f", "h=i");
+        assertThat(outcome.errors()).hasSize(2);
+        assertThat(outcome.errors().get(0))
+            .hasMessageContaining("Expected [=] but found [+d;");
+        assertThat(outcome.errors().get(1))
+            .hasMessageContaining("Expected [identifier] but found [; h=i;] at line 1, column 18");
+    }
+
+    @Test
+    void runRecoveringSucceedsWithoutErrors() {
+        final var outcome = new RecoveringParser("a=b; c=d;").runRecovering();
+
+        assertThat(outcome.succeeded()).isTrue();
+        assertThat(outcome.errors()).isEmpty();
+        assertThat(outcome.value().orElseThrow()).containsExactly("a=b", "c=d");
+    }
+
+    @Test
+    void runStillThrowsTheFirstReportedError() {
+        assertThatThrownBy(() -> new RecoveringParser("a=b; c+d; e+f;").run())
+            .isInstanceOf(DemoException.class)
+            .hasMessageContaining("Expected [=] but found [+d; e+f;] at line 1, column 7");
+    }
+
+    @Test
+    void skipPastStopsAtEndOfInputWhenThereIsNoDelimiter() {
+        final var outcome = new RecoveringParser("a=b; c+d").runRecovering();
+
+        assertThat(outcome.value().orElseThrow()).containsExactly("a=b");
+        assertThat(outcome.errors()).hasSize(1);
+    }
+
+    @Test
+    void runRecoveringRecordsAnEscapingParseExceptionAsTheLastError() {
+        final var outcome = new AssignmentParser("a + b").runRecovering();
+
+        assertThat(outcome.value()).isEmpty();
+        assertThat(outcome.errors()).singleElement().isInstanceOf(DemoException.class);
+    }
+
+    @Test
+    void runRecoveringReportsInputLeftUnconsumed() {
+        final var outcome = new AssignmentParser("a=b; trailing").runRecovering();
+
+        assertThat(outcome.value()).contains("a=b");
+        assertThat(outcome.errors()).singleElement().isInstanceOf(DemoException.class);
+    }
+
+    @Test
+    void reportOutsideAParseIsRejected() {
+        assertThatThrownBy(() -> new RecoveringParser("").reportOutsideParse())
+            .isInstanceOf(IllegalStateException.class);
+    }
+
+    /**
+     * Parses one {@code <ident> = <ident>} statement per line with {@link Filter#WHITESPACE} registered, recovering
+     * by skipping past the newline.
+     */
+    private static final class LineParser extends AbstractParser<List<String>> {
+
+        private static final Pattern IDENT = Pattern.compile("[a-zA-Z_][a-zA-Z0-9_]*");
+
+        LineParser(final String input) {
+            super(input);
+        }
+
+        @Override
+        protected List<String> parse() {
+            final List<String> statements = new ArrayList<>();
+            while (scanner.hasNext()) {
+                try {
+                    final var lhs = expect(IDENT, "identifier");
+                    expect("=");
+                    statements.add(lhs + "=" + expect(IDENT, "identifier"));
+                } catch (final ParseException e) {
+                    report(e);
+                    skipPast("\n");
+                }
+            }
+            return statements;
+        }
+
+        @Override
+        protected RuntimeException translate(final ParseException cause) {
+            return new DemoException("parse failed: " + cause.getMessage(), cause);
+        }
+    }
+
+    @Test
+    void skipPastFindsANewlineEvenThoughWhitespaceIsFiltered() {
+        final var outcome = new LineParser("a=b\nc+d\ne=f\n").runRecovering();
+
+        assertThat(outcome.value().orElseThrow()).containsExactly("a=b", "e=f");
+        assertThat(outcome.errors()).hasSize(1);
+    }
+
+    @Test
+    void runRecoveringRecoversFromAReader() {
+        final var outcome = new RecoveringParser(new StringReader("a=b; c+d; e=f;")).runRecovering();
+
+        assertThat(outcome.value().orElseThrow()).containsExactly("a=b", "e=f");
+        assertThat(outcome.errors()).hasSize(1);
+    }
+
+    @Test
+    void runRecoveringRecoversAcrossReaderBufferBoundaries() {
+        final var input = new StringBuilder();
+        final var expected = new ArrayList<String>();
+        for (int i = 0; i < 5000; i++) {
+            if (i % 100 == 7) {
+                input.append("a+b; ");
+            } else {
+                input.append("a=b; ");
+                expected.add("a=b");
+            }
+        }
+
+        final var outcome = new RecoveringParser(new StringReader(input.toString())).runRecovering();
+
+        assertThat(outcome.value()).contains(expected);
+        assertThat(outcome.errors()).hasSize(50);
+    }
+
+    @Test
+    void outcomeCopiesItsErrors() {
+        final var errors = new ArrayList<RuntimeException>();
+        final var outcome = new AbstractParser.Outcome<>(Optional.of("v"), errors);
+
+        errors.add(new RuntimeException("late"));
+
+        assertThat(outcome.errors()).isEmpty();
+        assertThat(outcome.succeeded()).isTrue();
+    }
+
+    @Test
+    void runRecoveringPropagatesExceptionsOtherThanParseException() {
+        final var parser = new AbstractParser<String>("x") {
+            @Override
+            protected String parse() {
+                throw new IllegalStateException("boom");
+            }
+
+            @Override
+            protected RuntimeException translate(final ParseException cause) {
+                return new DemoException("unused", cause);
+            }
+        };
+
+        assertThatThrownBy(parser::runRecovering)
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessage("boom");
+    }
+
+    @Test
+    void runRecoveringRecordsAParseExceptionFromRegisterFilters() {
+        final var parser = new AbstractParser<String>("x") {
+            @Override
+            protected void registerFilters(final Scanner s) {
+                throw new ParseException(s.getLocation(), "filters", "none");
+            }
+
+            @Override
+            protected String parse() {
+                return "unreachable";
+            }
+
+            @Override
+            protected RuntimeException translate(final ParseException cause) {
+                return new DemoException("filters failed", cause);
+            }
+        };
+
+        final var outcome = parser.runRecovering();
+
+        assertThat(outcome.value()).isEmpty();
+        assertThat(outcome.errors()).singleElement().extracting(Throwable::getMessage).isEqualTo("filters failed");
+    }
+
+    @Test
+    void translateRunsWhileTheScannerIsStillOpen() {
+        final var parser = new AbstractParser<String>("a + b") {
+            @Override
+            protected String parse() {
+                final var lhs = expect(Pattern.compile("[a-z]+"), "identifier");
+                expect("=");
+                return lhs;
+            }
+
+            @Override
+            protected RuntimeException translate(final ParseException cause) {
+                return new DemoException("remaining: " + scanner.peekChar(), cause);
+            }
+        };
+
+        assertThat(parser.runRecovering().errors()).singleElement().extracting(Throwable::getMessage).asString()
+            .startsWith("remaining: ");
+    }
+
+    @Test
+    void errorsAreNotSharedBetweenRuns() {
+        final var parser = new RecoveringParser("a+b;");
+
+        assertThat(parser.runRecovering().errors()).hasSize(1);
+        assertThat(parser.runRecovering().errors()).hasSize(1);
     }
 }
