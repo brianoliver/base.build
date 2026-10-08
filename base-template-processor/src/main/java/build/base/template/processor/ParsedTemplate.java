@@ -22,15 +22,31 @@ package build.base.template.processor;
 
 import java.util.List;
 
+/**
+ * @param sourceFile the {@code .jt} file the template was parsed from, or {@code null} when unknown
+ * @param lines      the one-based line of the {@code .jt} file that each node of {@code body} came from, in the same
+ *                   order, or empty when unknown
+ */
 record ParsedTemplate(String packageName,
                       List<String> imports,
                       String outType,
                       String className,
                       String params,
-                      List<BodyNode> body
+                      List<BodyNode> body,
+                      String sourceFile,
+                      List<Integer> lines
 ) {
+    ParsedTemplate(final String packageName,
+                   final List<String> imports,
+                   final String outType,
+                   final String className,
+                   final String params,
+                   final List<BodyNode> body) {
+        this(packageName, imports, outType, className, params, body, null, List.of());
+    }
+
     ParsedTemplate withPackageName(final String packageName) {
-        return new ParsedTemplate(packageName, imports, outType, className, params, body);
+        return new ParsedTemplate(packageName, imports, outType, className, params, body, sourceFile, lines);
     }
 
     String qualifiedClassName() {

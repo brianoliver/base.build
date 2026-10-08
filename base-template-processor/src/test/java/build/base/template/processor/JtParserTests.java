@@ -7,6 +7,10 @@ import java.util.ArrayList;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+/**
+ * @author reed.vonredwitz
+ * @since Apr-2026
+ */
 class JtParserTests {
 
     @Test
@@ -14,7 +18,7 @@ class JtParserTests {
         final var result = JtParser.parse("""
             out HtmlOut;
             package com.example;
-
+            
             template HelloTemplate(String name) {
             <h1>Hello</h1>
             @end
@@ -54,10 +58,10 @@ class JtParserTests {
         final var result = JtParser.parse("""
             out HtmlOut;
             package com.example;
-
+            
             import java.util.List;
             import com.example.Task;
-
+            
             template TasksTemplate(List<Task> tasks) {
             @end
             """, "tasks.jt");

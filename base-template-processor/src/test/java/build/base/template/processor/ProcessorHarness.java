@@ -9,9 +9,9 @@ package build.base.template.processor;
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- * 
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -36,6 +36,9 @@ import javax.tools.ToolProvider;
 /**
  * Drives {@link TemplateProcessor} through a real {@code javac} invocation over a throw-away module, so that error
  * paths (which would break the build of {@code base-template-test}) can be asserted on.
+ *
+ * @author reed.vonredwitz
+ * @since Oct-2026
  */
 final class ProcessorHarness {
 

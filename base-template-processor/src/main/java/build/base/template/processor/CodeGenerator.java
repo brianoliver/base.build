@@ -20,6 +20,7 @@ package build.base.template.processor;
  * #L%
  */
 
+import java.nio.file.Path;
 import java.util.List;
 
 final class CodeGenerator {
@@ -54,7 +55,7 @@ final class CodeGenerator {
         sb.append("    @Override\n");
         sb.append("    public void render(final ").append(template.outType()).append(" out) {\n");
 
-        generateBody(template.body(), sb);
+        generateBody(template, sb);
 
         sb.append("    }\n");
         sb.append("}\n");
@@ -62,42 +63,70 @@ final class CodeGenerator {
         return sb.toString();
     }
 
-    private static void generateBody(final List<BodyNode> body,
+    private static void generateBody(final ParsedTemplate template,
                                      final StringBuilder sb) {
+        final List<BodyNode> body = template.body();
         final StringBuilder raw = new StringBuilder();
+        // The source line of the first node of the pending raw text, and of the last line a comment was written for
+        int rawLine = 0;
+        int commented = 0;
 
-        for (final BodyNode node : body) {
+        for (int i = 0; i < body.size(); i++) {
+            final int line = i < template.lines().size() ? template.lines().get(i) : 0;
+            final BodyNode node = body.get(i);
+            if (node instanceof BodyNode.RawText) {
+                if (raw.isEmpty()) {
+                    rawLine = line;
+                }
+            } else {
+                commented = flushRaw(raw, rawLine, commented, template, sb);
+                commented = comment(line, commented, template, sb);
+            }
             switch (node) {
                 case BodyNode.RawText(final String text) -> raw.append(text);
-                case BodyNode.Expression(final String code) -> {
-                    flushRaw(raw, sb);
+                case BodyNode.Expression(final String code) ->
                     sb.append("        out.write(").append(code).append(");\n");
-                }
-                case BodyNode.ContextExpression(final String method, final String code) -> {
-                    flushRaw(raw, sb);
+                case BodyNode.ContextExpression(final String method, final String code) ->
                     sb.append("        out.").append(method).append("(").append(code).append(");\n");
-                }
-                case BodyNode.CodeLine(final String code) -> {
-                    flushRaw(raw, sb);
-                    sb.append("        ").append(code).append("\n");
-                }
-                case BodyNode.Include(final String expression) -> {
-                    flushRaw(raw, sb);
+                case BodyNode.CodeLine(final String code) -> sb.append("        ").append(code).append("\n");
+                case BodyNode.Include(final String expression) ->
                     sb.append("        ").append(expression).append(".render(out);\n");
-                }
             }
         }
 
-        flushRaw(raw, sb);
+        flushRaw(raw, rawLine, commented, template, sb);
     }
 
-    private static void flushRaw(final StringBuilder raw,
-                                 final StringBuilder sb) {
+    /** Writes the pending raw text, returning the line last commented. */
+    private static int flushRaw(final StringBuilder raw,
+                                final int line,
+                                final int commented,
+                                final ParsedTemplate template,
+                                final StringBuilder sb) {
         if (raw.isEmpty()) {
-            return;
+            return commented;
         }
+        final int result = comment(line, commented, template, sb);
         sb.append("        out.raw(\"").append(escapeJava(raw.toString())).append("\");\n");
         raw.setLength(0);
+        return result;
+    }
+
+    /**
+     * Writes a comment naming the {@code .jt} line the next statement came from, unless it was just written for the
+     * same line. Returns the line last commented.
+     */
+    private static int comment(final int line,
+                               final int commented,
+                               final ParsedTemplate template,
+                               final StringBuilder sb) {
+        if (line <= 0 || line == commented || template.sourceFile() == null) {
+            return commented;
+        }
+        final Path name = Path.of(template.sourceFile()).getFileName();
+        sb.append("        // ").append(name == null ? template.sourceFile() : name).append(':').append(line)
+            .append('\n');
+        return line;
     }
 
     private static String escapeJava(final String s) {
