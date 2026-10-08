@@ -21,7 +21,10 @@ package build.base.parsing;
  */
 
 import java.io.Reader;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.regex.Pattern;
 
 /**
@@ -60,6 +63,11 @@ public abstract class AbstractParser<T>
     protected Scanner scanner;
 
     /**
+     * The errors reported by the current parse; {@code null} when none is running.
+     */
+    private List<RuntimeException> errors;
+
+    /**
      * Constructs an {@link AbstractParser} that will read from the given {@link String}.
      *
      * @param input the input string
@@ -82,7 +90,9 @@ public abstract class AbstractParser<T>
     /**
      * Subclass hook: implements the grammar.  Reads from {@link #scanner}, returns the parsed value.  Should not
      * catch {@link ParseException} — let it propagate; {@link #run()} will translate it via
-     * {@link #translate(ParseException)}.
+     * {@link #translate(ParseException)}.  The one exception is a grammar that deliberately recovers, by catching at a
+     * statement boundary and calling {@link #report(ParseException)}; {@link #run()} then still throws the first
+     * error reported, and {@link #runRecovering()} returns them all.
      *
      * @return the parsed value
      */
@@ -119,22 +129,112 @@ public abstract class AbstractParser<T>
      */
     @Override
     public final T run() {
+        final Outcome<T> outcome = runRecovering();
+        if (!outcome.errors().isEmpty()) {
+            throw outcome.errors().getFirst();
+        }
+        return outcome.value().orElse(null);
+    }
+
+    /**
+     * Runs the parse like {@link #run()}, but returns every error instead of throwing the first.
+     * <p>
+     * A grammar opts in to recovery by catching a {@link ParseException} at a statement boundary, passing it to
+     * {@link #report(ParseException)}, and moving the scanner past the damage (see {@link #skipPast(String)}) before
+     * carrying on.  A {@link ParseException} that escapes {@link #parse()} is recorded as the last error, and the
+     * value is then {@link Optional#empty()}.  Exceptions other than {@link ParseException} propagate as in {@link #run()}.
+     *
+     * @return the value (possibly partial when errors were reported) and the errors, translated by
+     * {@link #translate(ParseException)}, in the order they were reported
+     */
+    public final Outcome<T> runRecovering() {
         try (var s = stringInput != null ? new Scanner(stringInput) : new Scanner(readerInput)) {
-            registerFilters(s);
             this.scanner = s;
-            final T result = parse();
-            if (s.hasNext()) {
-                throw new ParseException(s.getLocation(), "(end of input)", String.valueOf(s.peekChar()));
+            this.errors = new ArrayList<>();
+            final T result;
+            try {
+                registerFilters(s);
+                result = parse();
+            } catch (final ParseException e) {
+                errors.add(translate(e));
+                return new Outcome<>(Optional.empty(), errors);
             }
-            return result;
-        } catch (final ParseException e) {
-            throw translate(e);
+            if (s.hasNext()) {
+                errors.add(translate(
+                    new ParseException(s.getLocation(), "(end of input)", String.valueOf(s.peekChar()))));
+            }
+            return new Outcome<>(Optional.ofNullable(result), errors);
         } catch (final RuntimeException e) {
             throw e;
         } catch (final Exception e) {
             throw new RuntimeException(e);
         } finally {
             this.scanner = null;
+            this.errors = null;
+        }
+    }
+
+    /**
+     * Records an error from a grammar that recovers from it.  The error is translated by
+     * {@link #translate(ParseException)}; the caller must then advance the scanner, or the same input will be
+     * parsed again.  Should {@link #translate(ParseException)} itself throw, that exception propagates to the caller.
+     *
+     * @param cause the error to record
+     * @throws IllegalStateException if no parse is running
+     */
+    protected final void report(final ParseException cause) {
+        reportTranslated(translate(cause));
+    }
+
+    /**
+     * Records an already-translated error, for grammars that detect a problem themselves and throw their own
+     * exception type.  See {@link #report(ParseException)}.
+     *
+     * @param error the error to record
+     * @throws IllegalStateException if no parse is running
+     */
+    protected final void reportTranslated(final RuntimeException error) {
+        if (errors == null) {
+            throw new IllegalStateException("errors can only be reported while a parse is running");
+        }
+        errors.add(Objects.requireNonNull(error, "The error must not be null"));
+    }
+
+    /**
+     * Helper for recovery: skips to the end of the next occurrence of {@code delimiter}, or to the end of the
+     * input when there is none.  Always advances unless the input is already exhausted, so a recovery loop built
+     * on it terminates.  Registered {@link Filter}s are not applied, so a newline delimiter is found even though
+     * {@link Filter#WHITESPACE} is registered by default.
+     *
+     * @param delimiter the non-empty text to skip past, for example a newline or a semicolon
+     * @throws IllegalArgumentException if the delimiter is {@code null} or empty
+     */
+    protected final void skipPast(final String delimiter) {
+        scanner.skipPast(delimiter);
+    }
+
+    /**
+     * The result of {@link #runRecovering()}.
+     *
+     * @param value  the parsed value, or {@link Optional#empty()} when an error ended the parse
+     * @param errors the errors reported, in order; empty when the parse succeeded
+     * @param <T>    the type of value produced by the grammar
+     */
+    public record Outcome<T>(Optional<T> value, List<RuntimeException> errors) {
+
+        /**
+         * Copies {@code errors} so the record is immutable however it is constructed.
+         */
+        public Outcome {
+            Objects.requireNonNull(value, "The value must not be null");
+            errors = List.copyOf(errors);
+        }
+
+        /**
+         * @return {@code true} if no errors were reported
+         */
+        public boolean succeeded() {
+            return errors.isEmpty();
         }
     }
 

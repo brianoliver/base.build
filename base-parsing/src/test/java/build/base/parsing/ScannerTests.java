@@ -1,10 +1,13 @@
 package build.base.parsing;
 
+import build.base.io.LookaheadReader;
 import org.junit.jupiter.api.Test;
 
+import java.io.StringReader;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for {@link Scanner}.
@@ -481,5 +484,97 @@ class ScannerTests {
         final var scanner = new Scanner("");
 
         org.junit.jupiter.api.Assertions.assertThrows(ParseException.class, scanner::consumeChar);
+    }
+
+    @Test
+    void shouldSkipPastDelimiter() {
+        final var scanner = new Scanner("abc;def");
+
+        scanner.skipPast(";");
+
+        assertThat(scanner.consume("def")).isEqualTo("def");
+    }
+
+    @Test
+    void shouldSkipPastMultiCharacterDelimiter() {
+        final var scanner = new Scanner("abc-->def");
+
+        scanner.skipPast("-->");
+
+        assertThat(scanner.consume("def")).isEqualTo("def");
+    }
+
+    @Test
+    void shouldSkipPastOnlyTheFirstDelimiter() {
+        final var scanner = new Scanner("a;b;c");
+
+        scanner.skipPast(";");
+
+        assertThat(scanner.consume("b")).isEqualTo("b");
+    }
+
+    @Test
+    void shouldSkipPastToEndWhenDelimiterAbsent() {
+        final var scanner = new Scanner("abc");
+
+        scanner.skipPast(";");
+
+        assertThat(scanner.hasNext()).isFalse();
+    }
+
+    @Test
+    void shouldSkipPastDelimiterAtEndOfInput() {
+        final var scanner = new Scanner("abc;");
+
+        scanner.skipPast(";");
+
+        assertThat(scanner.hasNext()).isFalse();
+    }
+
+    @Test
+    void shouldSkipPastNothingOnExhaustedInput() {
+        final var scanner = new Scanner("");
+
+        scanner.skipPast(";");
+
+        assertThat(scanner.hasNext()).isFalse();
+    }
+
+    @Test
+    void shouldSkipPastNewlineDespiteWhitespaceFilter() {
+        final var scanner = new Scanner("abc\ndef")
+            .register(Filter.WHITESPACE);
+
+        scanner.skipPast("\n");
+
+        assertThat(scanner.consume("def")).isEqualTo("def");
+    }
+
+    @Test
+    void shouldRejectNullOrEmptySkipPastDelimiter() {
+        final var scanner = new Scanner("abc");
+
+        assertThatThrownBy(() -> scanner.skipPast(null)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> scanner.skipPast("")).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void shouldSkipPastMultiCharacterDelimiterAcrossReaderBufferBoundaries() {
+        final var input = "x".repeat(10_000) + "-->def";
+        final var scanner = new Scanner(new StringReader(input));
+
+        scanner.skipPast("-->");
+
+        assertThat(scanner.consume("def")).isEqualTo("def");
+    }
+
+    @Test
+    void shouldSkipPastMultiCharacterDelimiterStraddlingSmallLookahead() {
+        final var input = "ab-x--x->-x-->ghi";
+        final var scanner = new Scanner(new LookaheadReader(new StringReader(input), 4));
+
+        scanner.skipPast("-->");
+
+        assertThat(scanner.consume("ghi")).isEqualTo("ghi");
     }
 }

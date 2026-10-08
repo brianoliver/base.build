@@ -28,6 +28,17 @@ public class LookaheadReaderTests {
     }
 
     /**
+     * Ensure growing the buffer part way through keeps the unconsumed content.
+     */
+    @Test
+    void shouldKeepUnconsumedContentWhenBufferGrows() {
+        final var reader = new LookaheadReader(new StringReader("abcdefgh"), 4);
+
+        assertThat(reader.consume(2)).isEqualTo("ab");
+        assertThat(reader.peek(6).toString()).isEqualTo("cdefgh");
+    }
+
+    /**
      * Ensure a {@link LookaheadReader} can be created for an empty {@link java.io.Reader}.
      */
     @Test
