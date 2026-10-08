@@ -20,6 +20,9 @@ package build.base.template.processor;
  * #L%
  */
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -32,12 +35,25 @@ import java.util.Set;
  *
  * @param prefix        the directive prefix, for example {@code @}
  * @param interpolation the interpolation opener, which ends with a left brace, for example <code>#&#123;</code>
+ * @param contexts      the named output contexts of the out type, as context name to the name of the method of the
+ *                      out type that implements it; the opener without its brace, a context name and a left brace
+ *                      (<code>#url&#123;</code>) writes to a context, and {@code raw} is always one
  * @author reed.vonredwitz
  * @since Oct-2026
  */
-record Syntax(String prefix, String interpolation) {
+record Syntax(String prefix, String interpolation, Map<String, String> contexts) {
 
     static final Syntax DEFAULT = new Syntax("@", "#{");
+
+    /**
+     * The name of the built-in context that writes its value verbatim; it cannot be declared by an out type.
+     */
+    static final String RAW = "raw";
+
+    /**
+     * Names an out type cannot use for a context.
+     */
+    static final Set<String> RESERVED_CONTEXTS = Set.of("raw", "write", "include");
 
     /**
      * The directives recognised after the prefix; any other line starting with the prefix is text.
@@ -51,7 +67,14 @@ record Syntax(String prefix, String interpolation) {
      */
     static final Set<String> RESERVED = Set.of("fragment", "endfragment", "slot", "flush");
 
+    Syntax(final String prefix, final String interpolation) {
+        this(prefix, interpolation, Map.of());
+    }
+
     Syntax {
+        final var all = new LinkedHashMap<>(contexts);
+        all.put(RAW, RAW);
+        contexts = Collections.unmodifiableMap(all);
         if (prefix.isEmpty() || prefix.chars().anyMatch(c -> Character.isWhitespace(c))
             || Character.isJavaIdentifierPart(prefix.charAt(0))) {
             throw new IllegalArgumentException(
@@ -78,6 +101,27 @@ record Syntax(String prefix, String interpolation) {
      */
     String escapedInterpolation() {
         return interpolation.charAt(0) + interpolation;
+    }
+
+    /**
+     * The same syntax with different delimiters, keeping the contexts.
+     */
+    Syntax withDelimiters(final String newPrefix, final String newInterpolation) {
+        return new Syntax(newPrefix, newInterpolation, contexts);
+    }
+
+    /**
+     * The text that stands for a literal named opener: the first character of the opener doubled in front of it.
+     */
+    String escapedContextOpener(final String context) {
+        return interpolation.charAt(0) + contextOpener(context);
+    }
+
+    /**
+     * The opener of a named write to a context, for example <code>#url&#123;</code>.
+     */
+    String contextOpener(final String context) {
+        return interpolationLead() + context + "{";
     }
 
     /**

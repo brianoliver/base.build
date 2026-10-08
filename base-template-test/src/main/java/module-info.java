@@ -23,4 +23,7 @@
 @build.base.template.ProcessTemplates
 module build.base.template.test {
     requires build.base.template;
+
+    // only so that tests can compile generated source
+    requires static java.compiler;
 }

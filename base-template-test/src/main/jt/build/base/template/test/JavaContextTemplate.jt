@@ -1,0 +1,12 @@
+out JavaOut;
+
+import java.util.Map;
+
+template JavaContextTemplate(String name, String doc, Map<String, String> constants) {
+/** $javadoc{doc} */
+public class $id{name} {
+%for (var entry : constants.entrySet()) {
+    public static final String $id{entry.getKey()} = "$str{entry.getValue()}";
+%}
+}
+%end

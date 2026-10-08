@@ -4,6 +4,12 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * Tests for {@link TextOut}.
+ *
+ * @author reed.vonredwitz
+ * @since Apr-2026
+ */
 class TextOutTests {
 
     @Test

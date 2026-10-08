@@ -18,6 +18,11 @@
 
     <dependencies>
         <dependency>
+            <groupId>build.base</groupId>
+            <artifactId>base-json</artifactId>
+        </dependency>
+
+        <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-api</artifactId>
             <scope>test</scope>

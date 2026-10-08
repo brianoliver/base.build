@@ -1,0 +1,13 @@
+out HtmlOut;
+
+package build.base.template.test;
+
+template ContextTemplate(String url, String title, java.util.Map<String, Object> vals, String css) {
+<style>
+#nav{ color: red }
+.x { content: "#css{css}"; }
+</style>
+<a href="#url{url}" title="#attr{title}" hx-vals="#json{vals}">#{title}</a>
+<script>var t = #js{title};</script>
+<p>#raw{"<b>raw</b>"} ##url{literal}</p>
+@end

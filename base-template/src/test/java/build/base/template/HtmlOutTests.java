@@ -4,6 +4,12 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * Tests for {@link HtmlOut}.
+ *
+ * @author reed.vonredwitz
+ * @since Apr-2026
+ */
 class HtmlOutTests {
 
     @Test
@@ -55,6 +61,45 @@ class HtmlOutTests {
         out.write("<b>bold</b>");
         out.raw("</li>");
         assertThat(out.toString()).isEqualTo("<li>&lt;b&gt;bold&lt;/b&gt;</li>");
+    }
+
+    @Test
+    void shouldEmitSafeHtmlWithoutEscaping() {
+        final var out = new HtmlOut();
+        out.write(SafeHtml.trusted("<b>bold</b>"));
+        assertThat(out.toString()).isEqualTo("<b>bold</b>");
+    }
+
+    @Test
+    void shouldRenderTemplateParameterWithoutDoubleEscaping() {
+        final Template<HtmlOut> inner = o -> {
+            o.raw("<span>");
+            o.write("a < b");
+            o.raw("</span>");
+        };
+        final var out = new HtmlOut();
+        out.raw("<div>");
+        out.write(inner);
+        out.raw("</div>");
+        assertThat(out.toString()).isEqualTo("<div><span>a &lt; b</span></div>");
+    }
+
+    @Test
+    void shouldRenderTemplateAcceptingSuperTypeOfHtmlOut() {
+        final Template<Out> inner = o -> o.write("x & y");
+        final var out = new HtmlOut();
+        out.write(inner);
+        assertThat(out.toString()).isEqualTo("x &amp; y");
+    }
+
+    @Test
+    void shouldStillEscapeStringsAlongsideSafeHtmlAndTemplates() {
+        final Template<HtmlOut> inner = o -> o.raw("<i>t</i>");
+        final var out = new HtmlOut();
+        out.write("<p>");
+        out.write(SafeHtml.trusted("<b>"));
+        out.write(inner);
+        assertThat(out.toString()).isEqualTo("&lt;p&gt;<b><i>t</i>");
     }
 
     @Test

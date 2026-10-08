@@ -29,6 +29,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.StringJoiner;
+import java.util.TreeMap;
 import java.util.stream.Stream;
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.RoundEnvironment;
@@ -36,6 +37,10 @@ import javax.annotation.processing.SupportedAnnotationTypes;
 import javax.annotation.processing.SupportedOptions;
 import javax.lang.model.SourceVersion;
 import javax.lang.model.element.AnnotationMirror;
+import javax.lang.model.element.Element;
+import javax.lang.model.element.ElementKind;
+import javax.lang.model.element.ExecutableElement;
+import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
 import javax.tools.Diagnostic;
 import javax.tools.StandardLocation;
@@ -150,12 +155,12 @@ public final class TemplateProcessor extends AbstractProcessor {
                 "out type " + outType + " not found; using the default template syntax");
             return Syntax.DEFAULT;
         }
+        String prefix = Syntax.DEFAULT.prefix();
+        String interpolation = Syntax.DEFAULT.interpolation();
         // getAllAnnotationMirrors includes annotations inherited from superclasses
         for (final AnnotationMirror mirror : elements.getAllAnnotationMirrors(type)) {
             final TypeElement annotation = (TypeElement) mirror.getAnnotationType().asElement();
             if (annotation.getQualifiedName().contentEquals("build.base.template.OutSyntax")) {
-                String prefix = Syntax.DEFAULT.prefix();
-                String interpolation = Syntax.DEFAULT.interpolation();
                 for (final var entry : elements.getElementValuesWithDefaults(mirror).entrySet()) {
                     final String value = (String) entry.getValue().getValue();
                     switch (entry.getKey().getSimpleName().toString()) {
@@ -165,10 +170,102 @@ public final class TemplateProcessor extends AbstractProcessor {
                         }
                     }
                 }
-                return new Syntax(prefix, interpolation);
+                break;
             }
         }
-        return Syntax.DEFAULT;
+        return new Syntax(prefix, interpolation, contextsOf(type));
+    }
+
+    /**
+     * The output contexts declared by the methods of an out type (including inherited ones) through
+     * {@code build.base.template.OutContext}, as context name to method name.
+     */
+    private Map<String, String> contextsOf(final TypeElement type) {
+        final var elements = processingEnv.getElementUtils();
+        final Map<String, String> contexts = new TreeMap<>();
+        for (final Element member : elements.getAllMembers(type)) {
+            if (member.getKind() != ElementKind.METHOD) {
+                continue;
+            }
+            final AnnotationMirror mirror = outContextOf((ExecutableElement) member);
+            if (mirror != null) {
+                final String method = member.getSimpleName().toString();
+                String name = method;
+                for (final var entry : elements.getElementValuesWithDefaults(mirror).entrySet()) {
+                    final String value = (String) entry.getValue().getValue();
+                    if (!value.isEmpty()) {
+                        name = value;
+                    }
+                }
+                final var executable = (ExecutableElement) member;
+                if (!SourceVersion.isIdentifier(name) || SourceVersion.isKeyword(name)
+                    || Syntax.RESERVED_CONTEXTS.contains(name)) {
+                    // an error, not a warning: an ignored context would leave its opener in the output as text
+                    processingEnv.getMessager().printMessage(
+                        Diagnostic.Kind.ERROR,
+                        "base-template-processor: " + type.getQualifiedName() + "#" + method
+                        + " declares output context '" + name + "', which is not a usable name "
+                        + "(it must be a Java identifier other than raw, write or include)");
+                } else if (!member.getModifiers().contains(Modifier.PUBLIC)
+                           || member.getModifiers().contains(Modifier.STATIC)
+                           || executable.getParameters().size() != 1) {
+                    processingEnv.getMessager().printMessage(
+                        Diagnostic.Kind.ERROR,
+                        "base-template-processor: " + type.getQualifiedName() + "#" + method
+                        + " declares output context '" + name
+                        + "' but is not a public instance method with one parameter");
+                } else if (contexts.containsKey(name) && !contexts.get(name).equals(method)) {
+                    processingEnv.getMessager().printMessage(
+                        Diagnostic.Kind.ERROR,
+                        "base-template-processor: output context '" + name + "' of " + type.getQualifiedName()
+                        + " is declared by both " + contexts.get(name) + " and " + method);
+                } else {
+                    contexts.put(name, method);
+                }
+            }
+        }
+        return contexts;
+    }
+
+    /**
+     * The {@code build.base.template.OutContext} annotation of a method, or {@code null}. An override that is not
+     * itself annotated inherits the annotation of the method it overrides, as {@code getAllMembers} only returns the
+     * overriding method.
+     */
+    private AnnotationMirror outContextOf(final ExecutableElement method) {
+        for (final AnnotationMirror mirror : method.getAnnotationMirrors()) {
+            final TypeElement annotation = (TypeElement) mirror.getAnnotationType().asElement();
+            if (annotation.getQualifiedName().contentEquals("build.base.template.OutContext")) {
+                return mirror;
+            }
+        }
+        return inheritedOutContext(method, (TypeElement) method.getEnclosingElement());
+    }
+
+    /**
+     * Searches the supertypes of {@code type} (transitively) for an annotated method that {@code method} overrides.
+     */
+    private AnnotationMirror inheritedOutContext(final ExecutableElement method, final TypeElement type) {
+        final var elements = processingEnv.getElementUtils();
+        final var types = processingEnv.getTypeUtils();
+        final var owner = (TypeElement) method.getEnclosingElement();
+        for (final var supertype : types.directSupertypes(type.asType())) {
+            final var supertypeElement = (TypeElement) types.asElement(supertype);
+            for (final Element candidate : supertypeElement.getEnclosedElements()) {
+                if (candidate.getKind() == ElementKind.METHOD
+                    && elements.overrides(method, (ExecutableElement) candidate, owner)) {
+                    final AnnotationMirror inherited = outContextOf((ExecutableElement) candidate);
+                    if (inherited != null) {
+                        return inherited;
+                    }
+                }
+            }
+            final AnnotationMirror further = inheritedOutContext(method, supertypeElement);
+            if (further != null) {
+                return further;
+            }
+        }
+        return null;
     }
 
     private void warnIfPathDoesNotMatchPackage(final Path jtSourceDir,
