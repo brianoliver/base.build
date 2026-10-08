@@ -63,6 +63,7 @@ class JtSyntaxTests {
             @} catch (Exception e) {
             @} finally {
             @}
+            @}
             """);
 
         assertThat(result.body()).containsExactly(
@@ -73,6 +74,7 @@ class JtSyntaxTests {
             new BodyNode.CodeLine("try {"),
             new BodyNode.CodeLine("} catch (Exception e) {"),
             new BodyNode.CodeLine("} finally {"),
+            new BodyNode.CodeLine("}"),
             new BodyNode.CodeLine("}"));
     }
 

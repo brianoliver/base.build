@@ -24,7 +24,9 @@ import build.base.io.LookaheadReader;
 import build.base.parsing.AbstractParser;
 import build.base.parsing.ParseException;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -157,6 +159,34 @@ final class JtParser {
             }
         }
         body.addAll(new TextLineParser(line + "\n", sourceFile, lineNumber, syntax, 0).run());
+    }
+
+    /**
+     * The braces of a line of Java, in order, leaving out those in string and character literals and comments.
+     */
+    private static List<Character> bracesOf(final String code) {
+        final List<Character> braces = new ArrayList<>();
+        for (int i = 0; i < code.length(); i++) {
+            final char c = code.charAt(i);
+            if (c == '"' || c == '\'') {
+                for (i++; i < code.length() && code.charAt(i) != c; i++) {
+                    if (code.charAt(i) == '\\') {
+                        i++;
+                    }
+                }
+            } else if (code.startsWith("//", i)) {
+                break;
+            } else if (code.startsWith("/*", i)) {
+                final int end = code.indexOf("*/", i + 2);
+                if (end < 0) {
+                    break;
+                }
+                i = end + 1;
+            } else if (c == '{' || c == '}') {
+                braces.add(c);
+            }
+        }
+        return braces;
     }
 
     private static JtParseException directiveError(final String sourceFile,
@@ -292,6 +322,11 @@ final class JtParser {
             // Parse body lines until @end
             final List<BodyNode> body = new ArrayList<>();
             final List<Integer> lines = new ArrayList<>();
+            // The blocks opened by directive lines and not yet closed, as {line, column}, innermost first
+            final Deque<int[]> open = new ArrayDeque<>();
+            // Whether every brace of the body so far was seen, so that block mismatches are real rather than a
+            // consequence of a line that failed to parse
+            boolean blocksKnown = true;
             boolean ended = false;
             while (scanner.hasNext()) {
                 final int lineNumber = scanner.getLocation().getLine();
@@ -303,14 +338,30 @@ final class JtParser {
                     ended = true;
                     break;
                 }
+                final int first = body.size();
                 try {
                     parseBodyLine(line, body, sourceFile, lineNumber, syntax, warnings);
                 } catch (final JtParseException e) {
                     reportTranslated(e);
+                    // A directive that may have opened or closed a block was dropped, so what is open is now unknown
+                    if (line.trim().startsWith(syntax.prefix()) && (line.indexOf('{') >= 0 || line.indexOf('}') >= 0)) {
+                        blocksKnown = false;
+                    }
                 }
                 while (lines.size() < body.size()) {
                     lines.add(lineNumber);
                 }
+                if (blocksKnown) {
+                    trackBlocks(body.subList(first, body.size()), open, lineNumber,
+                        line.indexOf(syntax.prefix()) + 1, syntax);
+                }
+            }
+            // Javac would report these in the generated code, far from the template line that caused them
+            final var unclosed = open.descendingIterator();
+            while (blocksKnown && unclosed.hasNext()) {
+                final int[] opened = unclosed.next();
+                reportTranslated(directiveError(sourceFile, opened[0], opened[1],
+                    "this block is never closed (missing '" + syntax.prefix() + "}')"));
             }
             if (!ended) {
                 throw error("missing @end for template " + className, scanner.getLocation());
@@ -324,6 +375,32 @@ final class JtParser {
             }
 
             return new ParsedTemplate(packageName, imports, outType, className, params, body, sourceFile, lines);
+        }
+
+        /**
+         * Matches the braces of the code lines among {@code nodes} against the blocks still {@code open}, reporting a
+         * closing brace that has nothing to close.
+         */
+        private void trackBlocks(final List<BodyNode> nodes,
+                                 final Deque<int[]> open,
+                                 final int lineNumber,
+                                 final int column,
+                                 final Syntax syntax) {
+            for (final BodyNode node : nodes) {
+                if (!(node instanceof BodyNode.CodeLine(final String code))) {
+                    continue;
+                }
+                for (final char brace : bracesOf(code)) {
+                    if (brace == '{') {
+                        open.push(new int[]{lineNumber, column});
+                    } else if (open.isEmpty()) {
+                        reportTranslated(directiveError(sourceFile, lineNumber, column,
+                            "unmatched '}': there is no open block to close"));
+                    } else {
+                        open.pop();
+                    }
+                }
+            }
         }
 
         /**
