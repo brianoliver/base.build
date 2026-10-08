@@ -328,7 +328,7 @@ final class JtParser {
 
                 // Validate as each option is read, so an error points at the option that caused it
                 try {
-                    syntax = new Syntax(prefix, interpolation);
+                    syntax = defaults.withDelimiters(prefix, interpolation);
                 } catch (final IllegalArgumentException e) {
                     throw error("invalid option '" + name + "': " + e.getMessage(), location);
                 }
@@ -398,9 +398,22 @@ final class JtParser {
             final StringBuilder text = new StringBuilder();
             while (scanner.hasNext()) {
                 // The escape is checked first: it contains the opener
+                final String escapedContext = followedByEscapedContext();
+                final String context = escapedContext == null ? followedByContext() : null;
                 if (scanner.follows(syntax.escapedInterpolation())) {
                     scanner.consume(syntax.escapedInterpolation());
                     text.append(syntax.interpolation());
+                } else if (escapedContext != null) {
+                    scanner.consume(syntax.escapedContextOpener(escapedContext));
+                    text.append(syntax.contextOpener(escapedContext));
+                } else if (context != null) {
+                    if (!text.isEmpty()) {
+                        nodes.add(new BodyNode.RawText(text.toString()));
+                        text.setLength(0);
+                    }
+                    final var start = scanner.getLocation();
+                    scanner.consume(syntax.interpolationLead() + context);
+                    nodes.add(new BodyNode.ContextExpression(syntax.contexts().get(context), consumeExpression(start)));
                 } else if (scanner.follows(syntax.interpolation())) {
                     if (!text.isEmpty()) {
                         nodes.add(new BodyNode.RawText(text.toString()));
@@ -417,6 +430,30 @@ final class JtParser {
                 nodes.add(new BodyNode.RawText(text.toString()));
             }
             return nodes;
+        }
+
+        /**
+         * The context whose opener (<code>#url&#123;</code>) is next in the input, or {@code null}.
+         */
+        private String followedByContext() {
+            for (final String context : syntax.contexts().keySet()) {
+                if (scanner.follows(syntax.contextOpener(context))) {
+                    return context;
+                }
+            }
+            return null;
+        }
+
+        /**
+         * The context whose escaped opener (<code>##url&#123;</code>) is next in the input, or {@code null}.
+         */
+        private String followedByEscapedContext() {
+            for (final String context : syntax.contexts().keySet()) {
+                if (scanner.follows(syntax.escapedContextOpener(context))) {
+                    return context;
+                }
+            }
+            return null;
         }
 
         /**

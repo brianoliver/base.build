@@ -21,5 +21,7 @@
  * A JPMS-native compile-time template library.
  */
 module build.base.template {
+    requires build.base.json;
+
     exports build.base.template;
 }

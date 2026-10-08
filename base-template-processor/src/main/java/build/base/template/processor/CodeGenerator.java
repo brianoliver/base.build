@@ -73,6 +73,10 @@ final class CodeGenerator {
                     flushRaw(raw, sb);
                     sb.append("        out.write(").append(code).append(");\n");
                 }
+                case BodyNode.ContextExpression(final String method, final String code) -> {
+                    flushRaw(raw, sb);
+                    sb.append("        out.").append(method).append("(").append(code).append(");\n");
+                }
                 case BodyNode.CodeLine(final String code) -> {
                     flushRaw(raw, sb);
                     sb.append("        ").append(code).append("\n");

@@ -7,6 +7,12 @@ import java.io.StringWriter;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+/**
+ * Tests for {@link Out}.
+ *
+ * @author reed.vonredwitz
+ * @since Oct-2026
+ */
 class OutTests {
 
     @Test

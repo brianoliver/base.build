@@ -27,6 +27,16 @@ sealed interface BodyNode {
     record Expression(String code) implements BodyNode {
     }
 
+    /**
+     * A write to a named output context, for example <code>#url&#123;expr&#125;</code>, which calls the method of the
+     * out type that implements the context.
+     *
+     * @param method the name of the method to call on the out type
+     * @param code   the expression to write
+     */
+    record ContextExpression(String method, String code) implements BodyNode {
+    }
+
     record CodeLine(String code) implements BodyNode {
     }
 
