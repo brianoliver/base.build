@@ -1,0 +1,17 @@
+out HtmlOut;
+
+package build.base.template.test;
+
+import java.util.List;
+
+template FragmentTemplate(String title, List<String> items) {
+<h1>#{title}</h1>
+<ul>
+@for (int position = 0; position < items.size(); position++) {
+@java var item = items.get(position);
+@fragment row(String item, int position)
+  <li id="item-#{position}">#{item}</li>
+@endfragment
+@}
+</ul>
+@end

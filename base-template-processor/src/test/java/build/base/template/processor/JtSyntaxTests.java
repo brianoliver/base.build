@@ -138,9 +138,9 @@ class JtSyntaxTests {
 
     @Test
     void reservedDirectiveIsAnError() {
-        assertThatThrownBy(() -> parseBody("@fragment row\n"))
+        assertThatThrownBy(() -> parseBody("@slot row\n"))
             .isInstanceOf(JtParseException.class)
-            .hasMessageContaining("@fragment is not supported yet");
+            .hasMessageContaining("@slot is not supported yet");
     }
 
     @Test

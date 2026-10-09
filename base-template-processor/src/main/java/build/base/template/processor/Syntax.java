@@ -65,7 +65,7 @@ record Syntax(String prefix, String interpolation, Map<String, String> contexts)
     /**
      * Directives that are reserved but not implemented yet.
      */
-    static final Set<String> RESERVED = Set.of("fragment", "endfragment", "slot", "flush");
+    static final Set<String> RESERVED = Set.of("slot", "flush");
 
     Syntax(final String prefix, final String interpolation) {
         this(prefix, interpolation, Map.of());
