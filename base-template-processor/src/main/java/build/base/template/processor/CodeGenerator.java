@@ -115,7 +115,8 @@ final class CodeGenerator {
     /**
      * Generates the statements for the nodes {@code from} (inclusive) to {@code to} (exclusive) of the body. A fragment
      * in that range is rendered in place, by creating its type with the variables named by its parameters, and its
-     * range is added to {@code fragments} for the caller to generate the type from.
+     * range is added to {@code fragments} for the caller to generate the type from. The body of an include is
+     * generated as a template of its own, in place, which sees what is around it.
      */
     private static void generateBody(final ParsedTemplate template,
                                      final int from,
@@ -149,6 +150,31 @@ final class CodeGenerator {
                 case BodyNode.CodeLine(final String code) -> sb.append(indent).append(code).append("\n");
                 case BodyNode.Include(final String expression) ->
                     sb.append(indent).append(expression).append(".render(out);\n");
+                case BodyNode.IncludeStart(final String type, final String args) -> {
+                    // The parser guarantees that every start has an end, and ends match starts
+                    int depth = 1;
+                    int end = i + 1;
+                    for (; end < to; end++) {
+                        if (body.get(end) instanceof BodyNode.IncludeStart) {
+                            depth++;
+                        } else if (body.get(end) instanceof BodyNode.IncludeEnd && --depth == 0) {
+                            break;
+                        }
+                    }
+                    // An anonymous class rather than a lambda, so that the body can keep calling its parameter "out"
+                    sb.append(indent).append("new ").append(type).append("(").append(args.isEmpty() ? "" : args + ", ")
+                        .append("new Template<").append(template.outType()).append(">() {\n");
+                    sb.append(indent).append("    @Override\n");
+                    sb.append(indent).append("    public void render(final ").append(template.outType())
+                        .append(" out) {\n");
+                    generateBody(template, i + 1, end, indent + "        ", fragments, sb);
+                    sb.append(indent).append("    }\n");
+                    sb.append(indent).append("}).render(out);\n");
+                    i = end;
+                }
+                case BodyNode.IncludeEnd() -> {
+                    // Not reached for the end of an include in range, which the start skips
+                }
                 case BodyNode.FragmentStart start -> {
                     // The parser guarantees that every start has an end and that fragments do not nest
                     int end = i + 1;

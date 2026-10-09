@@ -61,6 +61,10 @@ final class JtParser {
     // The argument of a fragment directive: a name and a parenthesised parameter list, as in a method declaration
     private static final Pattern FRAGMENT_DECLARATION = Pattern.compile("([a-zA-Z_$][\\w$]*)\\s*\\((.*)\\)");
 
+    // The argument of an include with a body: the template type, its arguments and the brace that opens the body
+    private static final Pattern INCLUDE_BLOCK =
+        Pattern.compile("([a-zA-Z_$][\\w$]*(?:\\.[a-zA-Z_$][\\w$]*)*)\\s*\\((.*)\\)\\s*\\{");
+
     // A URL attribute whose value is just starting: an interpolation here could supply the scheme. A fixed prefix such
     // as href="/tasks/#{id}" cannot, so it does not match
     private static final Pattern URL_ATTRIBUTE_START = Pattern.compile(
@@ -264,7 +268,18 @@ final class JtParser {
                             throw directiveError(sourceFile, lineNumber, column,
                                                  syntax.prefix() + "include requires an expression");
                         }
-                        body.add(new BodyNode.Include(argument));
+                        if (argument.endsWith("{")) {
+                            final Matcher block = INCLUDE_BLOCK.matcher(argument);
+                            if (!block.matches()) {
+                                throw directiveError(sourceFile, lineNumber, column,
+                                                     syntax.prefix() + "include with a body requires a template and"
+                                                     + " arguments, as in '" + syntax.prefix()
+                                                     + "include Layout(title) {'");
+                            }
+                            body.add(new BodyNode.IncludeStart(block.group(1), block.group(2).trim()));
+                        } else {
+                            body.add(new BodyNode.Include(argument));
+                        }
                     }
                     case "fragment" -> {
                         final Matcher declaration = FRAGMENT_DECLARATION.matcher(argument);
@@ -532,7 +547,8 @@ final class JtParser {
                     ? line.trim().startsWith(syntax.prefix()) && !line.trim().startsWith(syntax.escapedPrefix())
                     : !added.isEmpty() && added.stream()
                     .allMatch(n -> n instanceof BodyNode.CodeLine || n instanceof BodyNode.Include
-                        || n instanceof BodyNode.FragmentStart || n instanceof BodyNode.FragmentEnd);
+                        || n instanceof BodyNode.FragmentStart || n instanceof BodyNode.FragmentEnd
+                        || n instanceof BodyNode.IncludeStart);
                 if (!directive) {
                     final String markup = (openTag == null ? "" : openTag + "\n") + withoutExpressions(line, syntax);
                     element = elementAfter(markup, element);
@@ -675,6 +691,18 @@ final class JtParser {
         }
 
         /**
+         * The block opened by the body of an include: {@code {line, column}} like any block, with a third element that
+         * marks it.
+         */
+        private static int[] includeBody(final int line, final int column) {
+            return new int[]{line, column, 1};
+        }
+
+        private static boolean isIncludeBody(final int[] block) {
+            return block.length == 3;
+        }
+
+        /**
          * Matches the braces of the code lines among {@code nodes} against the blocks still {@code open}, reporting a
          * closing brace that has nothing to close.
          */
@@ -683,7 +711,12 @@ final class JtParser {
                                  final int lineNumber,
                                  final int column,
                                  final Syntax syntax) {
-            for (final BodyNode node : nodes) {
+            for (int i = 0; i < nodes.size(); i++) {
+                final BodyNode node = nodes.get(i);
+                if (node instanceof BodyNode.IncludeStart) {
+                    open.push(includeBody(lineNumber, column));
+                    continue;
+                }
                 if (!(node instanceof BodyNode.CodeLine(final String code))) {
                     continue;
                 }
@@ -693,8 +726,15 @@ final class JtParser {
                     } else if (open.isEmpty()) {
                         reportTranslated(directiveError(sourceFile, lineNumber, column,
                             "unmatched '}': there is no open block to close"));
-                    } else {
-                        open.pop();
+                    } else if (isIncludeBody(open.pop())) {
+                        // The generator finds the end of the body by this node, not by counting braces
+                        if (code.equals("}")) {
+                            nodes.set(i, new BodyNode.IncludeEnd());
+                        } else {
+                            reportTranslated(directiveError(sourceFile, lineNumber, column,
+                                "the body of an include must be closed by '" + syntax.prefix() + "}' on a line of"
+                                + " its own"));
+                        }
                     }
                 }
             }

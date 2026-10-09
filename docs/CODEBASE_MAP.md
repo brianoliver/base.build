@@ -814,6 +814,7 @@ template TasksTemplate(String title, List<String> items) {
 - `@fragment name(Type param, ...)` … `@endfragment` — a part of the template that is rendered in place, by `new Name(param, ...).render(out)` with the variables of the same names, and is also generated as a nested record `Name` (the name with its first letter upper-cased) implementing `Template<Out>`, so it can be rendered on its own (`new TasksPage.Row(task)`). A fragment sees only its parameters, not the template's: it is a separate type. Fragments do not nest, must be closed, must contain whole blocks, and need distinct names that differ from the template's. The generated type must not share its name with a type the template imports, gets from `java.lang`, or names in a parameter list (checked); nor with a type of the template's own package (not checked, and javac reports it)
 - `@java <statement>` — any other Java statement, emitted into `render()` (for example `@java out.raw(x);`)
 - `@include <expr>` — calls `<expr>.render(out)` for sub-template composition; the expression is required
+- `@include Layout(args) {` … `@}` — an include with a body: the lines up to the matching `@}` become a `Template<Out>` (an anonymous class, so `out` keeps its name) that is passed to the included template as its last argument, as `new Layout(args, <body>).render(out)`. The body sees what is around it, which must be effectively final. The `@}` must be on a line of its own, and bodies nest. The layout declares a `Template<Out>` parameter for the body, last, and renders it with `@include body`
 - `out` is an implicit variable inside `render`, so `@java` can call it directly (`@java out.raw(...);`)
 - Escapes: `@@` at the start of a line emits a literal `@` (for a text line that would otherwise be a directive); `##{` emits a literal `#{`
 - Delimiters are configurable per template with `option` lines immediately after the `out` declaration. They override the defaults the `Out` type declares with `@OutSyntax` (inherited by subclasses; `JavaOut` declares `%` and `${`; any `Out` without the annotation uses `@` and `#{`): `option prefix = "%";` replaces `@`, and `option interpolation = "${";` replaces `#{` (it must end with `{`). The escapes follow: the prefix doubled, and the interpolation's first character doubled (`$${`). Values are plain double-quoted strings and the prefix must not start with an identifier character
@@ -1387,7 +1388,7 @@ Optional<List<String>> cycle = Graphs.findCycle(g); // empty if DAG
 - Create a `.jt` file under `src/main/jt/<package>/MyTemplate.jt`
 - Annotate `module-info.java` with `@build.base.template.ProcessTemplates`
 - Add `base-template` as a runtime dependency and `base-template-processor` to `annotationProcessorPaths`
-- Use `#{expr}` for interpolation, `@for`/`@if`/`@}` for control flow, `@include expr` for composition, `@fragment name(params)` … `@endfragment` for a part that also renders on its own
+- Use `#{expr}` for interpolation, `@for`/`@if`/`@}` for control flow, `@include expr` for composition, `@fragment name(params)` … `@endfragment` for a part that also renders on its own, `@include Layout(args) {` … `@}` with `@include body` in the layout for a page shell
 - Choose `HtmlOut` for HTML output (auto-escapes user values) or `TextOut` for plain text
 
 **To parse and compare versions:**

@@ -50,6 +50,23 @@ sealed interface BodyNode {
     }
 
     /**
+     * The start of an include with a body, <code>@include Layout(title) &#123;</code>: the nodes up to the matching
+     * {@link IncludeEnd} are a template that is passed to the included template as its last argument, for it to render
+     * with an {@code include}.
+     *
+     * @param type the name of the included template type
+     * @param args the arguments for the included template, before the body; may be empty
+     */
+    record IncludeStart(String type, String args) implements BodyNode {
+    }
+
+    /**
+     * The end of an include with a body: the closing brace line that matches an {@link IncludeStart}.
+     */
+    record IncludeEnd() implements BodyNode {
+    }
+
+    /**
      * The start of a fragment: the nodes up to the matching {@link FragmentEnd} are a part of the template that is
      * rendered in place and is also a template of its own.
      *

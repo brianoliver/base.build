@@ -1,0 +1,15 @@
+out HtmlOut;
+
+package build.base.template.test;
+
+import java.util.List;
+
+template PageTemplate(String title, List<String> items) {
+@include LayoutTemplate(title) {
+<ul>
+@for (var item : items) {
+  <li>#{item}</li>
+@}
+</ul>
+@}
+@end
