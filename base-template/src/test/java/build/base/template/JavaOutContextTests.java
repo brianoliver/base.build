@@ -118,10 +118,21 @@ class JavaOutContextTests {
             Map.entry("a < b && c > d", "a &lt; b &amp;&amp; c &gt; d"),
             Map.entry("*/", "*&#47;"),
             Map.entry("a/b", "a/b"),
-            Map.entry("/* nested */", "/* nested *&#47;"),
+            Map.entry("/* nested */", "&#47;* nested *&#47;"),
             Map.entry("{@link X} @author me", "{&#64;link X} &#64;author me"),
             Map.entry("\\u002a/", "&#92;u002a/"),
             Map.entry("caf\u00e9", "caf\u00e9")));
+    }
+
+    @Test
+    void shouldEscapeALeadingSlashBecauseTheTemplateTextBeforeItMayEndInAStar() {
+        final var comment = render(o -> {
+            o.raw("/**\n *");
+            o.writeJavadoc("/ int evil;");
+            o.raw("\n */");
+        });
+
+        assertThat(comment.indexOf("*/")).isEqualTo(comment.length() - 2);
     }
 
     @Test
