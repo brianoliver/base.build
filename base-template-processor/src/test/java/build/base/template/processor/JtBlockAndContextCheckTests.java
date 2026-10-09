@@ -146,4 +146,58 @@ class JtBlockAndContextCheckTests {
 
         assertThat(messages(outcome)).singleElement().asString().contains("(missing '%}')");
     }
+
+    // --- contexts ---
+
+    @Test
+    void shouldWarnAboutAContextThatIsOneEditAwayFromADeclaredOne() {
+        final var outcome = parse("<a href=\"#urll{x}\">\n");
+
+        assertThat(outcome.succeeded()).isTrue();
+        assertThat(warnings).singleElement().asString()
+            .contains("t.jt: line 4, column 10: '#urll{' is not an output context")
+            .contains("did you mean '#url{'?")
+            .contains("The contexts are json, raw, url");
+    }
+
+    @Test
+    void shouldStillEmitTheMistypedOpenerAsText() {
+        final var outcome = parse("#urll{x}\n");
+
+        assertThat(outcome.value().orElseThrow().body()).containsExactly(new BodyNode.RawText("#urll{x}\n"));
+    }
+
+    @Test
+    void shouldWarnAboutMissingExtraAndSwappedCharacters() {
+        parse("#ur{a} #urls{b} #ulr{c} #jsn{d} #rwa{e}\n");
+
+        assertThat(warnings).hasSize(5);
+        assertThat(warnings.get(0)).contains("did you mean '#url{'?");
+        assertThat(warnings.get(1)).contains("did you mean '#url{'?");
+        assertThat(warnings.get(2)).contains("did you mean '#url{'?");
+        assertThat(warnings.get(3)).contains("did you mean '#json{'?");
+        assertThat(warnings.get(4)).contains("did you mean '#raw{'?");
+    }
+
+    @Test
+    void shouldNotWarnAboutTextThatMerelyLooksLikeAnOpener() {
+        parse("""
+            #nav{color:red}
+            #main{margin:0}
+            #{x} #url{x} #raw{x} #json{x}
+            ##url{x}
+            """);
+
+        assertThat(warnings).isEmpty();
+    }
+
+    @Test
+    void shouldNotWarnAboutShortContextNames() {
+        final var syntax = new Syntax("@", "#{", Map.of("js", "writeJs"));
+
+        JtParser.parseAll("out HtmlOut;\npackage p;\ntemplate T() {\n#j{x} #jss{y}\n@end\n", "t.jt",
+            outType -> syntax, warnings::add);
+
+        assertThat(warnings).isEmpty();
+    }
 }

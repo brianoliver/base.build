@@ -30,10 +30,16 @@ import java.util.Deque;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+/**
+ * @author reed.vonredwitz
+ * @since Apr-2026
+ */
 final class JtParser {
 
     private static final Pattern QUALIFIED_NAME =
@@ -52,7 +58,123 @@ final class JtParser {
     private static final Pattern LOOKS_LIKE_STATEMENT =
         Pattern.compile("[a-z_$][\\w$]*(\\.[\\w$]+)*\\(.*\\)\\s*;");
 
+    // A URL attribute whose value is just starting: an interpolation here could supply the scheme. A fixed prefix such
+    // as href="/tasks/#{id}" cannot, so it does not match
+    private static final Pattern URL_ATTRIBUTE_START = Pattern.compile(
+        "(?i)(?:^|[\\s\"'])(href|src|action|formaction|poster|cite|data|srcset|ping|xlink:href"
+            + "|hx-(?:get|post|put|patch|delete|push-url|replace-url))\\s*=\\s*[\"']?\\s*$");
+
+    // An attribute whose value is JavaScript or JSON, with its value still open. A style="..." attribute (CSS) is
+    // deliberately not covered: only the style element is
+    private static final Pattern SCRIPT_ATTRIBUTE_OPEN = Pattern.compile(
+        "(?i)(?:^|[\\s\"'])(on[a-z]+|hx-on[\\w:.\\-]*|hx-vals|hx-headers|x-[\\w:.\\-]+|@[\\w:.\\-]+|:[\\w\\-]+)"
+            + "\\s*=\\s*(?:\"[^\"]*|'[^']*)$");
+
+    // A complete opening or closing tag of an element whose content is not markup
+    private static final Pattern RAW_TEXT_TAG = Pattern.compile("(?i)<(/?)(script|style)\\b[^>]*>");
+
     private JtParser() {
+    }
+
+    /**
+     * The raw-text element ({@code script} or {@code style}) that the end of {@code text} is inside, or {@code null}.
+     * <p>
+     * Known limitation: HTML comments are not understood, so a tag inside {@code <!-- -->} still counts.
+     *
+     * @param text    markup, which may start or end the element
+     * @param initial the element the text starts inside, or {@code null}
+     */
+    private static String elementAfter(final String text, final String initial) {
+        String element = initial;
+        final var tags = RAW_TEXT_TAG.matcher(text);
+        while (tags.find()) {
+            final boolean closing = !tags.group(1).isEmpty();
+            final String name = tags.group(2).toLowerCase();
+            if (element == null) {
+                if (!closing && !tags.group().endsWith("/>")) {
+                    element = name;
+                }
+            } else if (closing && name.equals(element)) {
+                // Inside a raw-text element only its own end tag means anything: a "<style>" in a script is a string
+                element = null;
+            }
+        }
+        return element;
+    }
+
+    /**
+     * The line with each interpolation, plain or to a named context, replaced by {@code ?}: what is inside the braces
+     * is Java, whose quotes and angle brackets say nothing about the markup around it. An interpolation that is never
+     * closed takes the rest of the line.
+     */
+    private static String withoutExpressions(final String line, final Syntax syntax) {
+        // Only the contexts of the out type, as the text parser treats any other name (such as CSS "#nav{") as text
+        final var names = syntax.contexts().keySet().stream().map(Pattern::quote).toList();
+        final var opener = Pattern.compile(Pattern.quote(syntax.interpolationLead())
+                + (names.isEmpty() ? "" : "(?:" + String.join("|", names) + ")?") + "\\{")
+            .matcher(line);
+        final var result = new StringBuilder();
+        int from = 0;
+        while (opener.find(from)) {
+            result.append(line, from, opener.start()).append('?');
+            int depth = 1;
+            int i = opener.end();
+            while (i < line.length() && depth > 0) {
+                final char c = line.charAt(i);
+                if (c == '"' || c == '\'') {
+                    for (i++; i < line.length() && line.charAt(i) != c; i++) {
+                        if (line.charAt(i) == '\\') {
+                            i++;
+                        }
+                    }
+                } else if (c == '{') {
+                    depth++;
+                } else if (c == '}') {
+                    depth--;
+                }
+                i++;
+            }
+            from = Math.min(i, line.length());
+        }
+        return result.append(line, from, line.length()).toString();
+    }
+
+    /**
+     * The start of the tag that the end of {@code text} is inside, from its {@code <}, or {@code null} when the text
+     * ends outside any tag. Quoted attribute values may contain {@code >}.
+     *
+     * @param text    markup, which may close or open tags
+     * @param element the raw-text element the text starts inside, or {@code null}; its content is not markup, so it is
+     *                skipped
+     */
+    private static String openTagAfter(final String text, final String element) {
+        String markup = text;
+        if (element != null) {
+            final var end = Pattern.compile("(?i)</" + element + "\\b[^>]*>").matcher(text);
+            if (!end.find()) {
+                return null;
+            }
+            markup = text.substring(end.end());
+        }
+        int start = -1;
+        char quote = 0;
+        for (int i = 0; i < markup.length(); i++) {
+            final char c = markup.charAt(i);
+            if (start < 0) {
+                if (c == '<' && i + 1 < markup.length() && Character.isLetter(markup.charAt(i + 1))) {
+                    start = i;
+                }
+            } else if (quote != 0) {
+                if (c == quote) {
+                    quote = 0;
+                }
+            } else if (c == '"' || c == '\'') {
+                quote = c;
+            } else if (c == '>') {
+                start = -1;
+            }
+        }
+        return start < 0 ? null : markup.substring(start);
     }
 
     static ParsedTemplate parse(final String content, final String sourceFile) {
@@ -98,7 +220,9 @@ final class JtParser {
                                       final String sourceFile,
                                       final int lineNumber,
                                       final Syntax syntax,
-                                      final Consumer<String> warnings) {
+                                      final Consumer<String> warnings,
+                                      final String element,
+                                      final String openTag) {
         final String trimmed = line.trim();
         final int column = line.indexOf(syntax.prefix()) + 1;
 
@@ -106,7 +230,7 @@ final class JtParser {
         if (trimmed.startsWith(syntax.escapedPrefix())) {
             final String unescaped = line.substring(0, column - 1) + line.substring(column - 1 + syntax.prefix().length());
             body.addAll(new TextLineParser(unescaped + "\n", sourceFile, lineNumber, syntax,
-                                           syntax.prefix().length()).run());
+                                           syntax.prefix().length(), warnings, element, openTag).run());
             return;
         }
 
@@ -158,7 +282,7 @@ final class JtParser {
                                 + "' to silence this warning");
             }
         }
-        body.addAll(new TextLineParser(line + "\n", sourceFile, lineNumber, syntax, 0).run());
+        body.addAll(new TextLineParser(line + "\n", sourceFile, lineNumber, syntax, 0, warnings, element, openTag).run());
     }
 
     /**
@@ -205,7 +329,7 @@ final class JtParser {
 
     /** Test-facing entry point: parse a single text line with the given syntax. */
     static void parseTextLine(final String line, final List<BodyNode> body, final Syntax syntax) {
-        body.addAll(new TextLineParser(line, null, 1, syntax, 0).run());
+        body.addAll(new TextLineParser(line, null, 1, syntax, 0, warning -> { }, null, null).run());
     }
 
     /**
@@ -324,6 +448,10 @@ final class JtParser {
             final List<Integer> lines = new ArrayList<>();
             // The blocks opened by directive lines and not yet closed, as {line, column}, innermost first
             final Deque<int[]> open = new ArrayDeque<>();
+            // The script or style element the next line starts inside, if any
+            String element = null;
+            // The tag the next line starts inside, if any: an attribute value may continue on a following line
+            String openTag = null;
             // Whether every brace of the body so far was seen, so that block mismatches are real rather than a
             // consequence of a line that failed to parse
             boolean blocksKnown = true;
@@ -339,14 +467,27 @@ final class JtParser {
                     break;
                 }
                 final int first = body.size();
+                boolean failed = false;
                 try {
-                    parseBodyLine(line, body, sourceFile, lineNumber, syntax, warnings);
+                    parseBodyLine(line, body, sourceFile, lineNumber, syntax, warnings, element, openTag);
                 } catch (final JtParseException e) {
+                    failed = true;
                     reportTranslated(e);
                     // A directive that may have opened or closed a block was dropped, so what is open is now unknown
                     if (line.trim().startsWith(syntax.prefix()) && (line.indexOf('{') >= 0 || line.indexOf('}') >= 0)) {
                         blocksKnown = false;
                     }
+                }
+                // Only text is markup: a directive line is Java, whose strings may well mention tags
+                final var added = body.subList(first, body.size());
+                final boolean directive = failed
+                    ? line.trim().startsWith(syntax.prefix()) && !line.trim().startsWith(syntax.escapedPrefix())
+                    : !added.isEmpty() && added.stream()
+                    .allMatch(n -> n instanceof BodyNode.CodeLine || n instanceof BodyNode.Include);
+                if (!directive) {
+                    final String markup = (openTag == null ? "" : openTag + "\n") + withoutExpressions(line, syntax);
+                    element = elementAfter(markup, element);
+                    openTag = openTagAfter(markup, element);
                 }
                 while (lines.size() < body.size()) {
                     lines.add(lineNumber);
@@ -477,6 +618,22 @@ final class JtParser {
         private final int lineNumber;
         private final Syntax syntax;
         private final int columnOffset;
+        private final Consumer<String> warnings;
+
+        /**
+         * The script or style element the line starts inside, or {@code null}.
+         */
+        private final String startElement;
+
+        /**
+         * The text of the tag the line starts inside, from its {@code <}, or {@code null}. A tag may span lines.
+         */
+        private final String startTag;
+
+        /**
+         * An opener that is not a context: the interpolation lead, a name and a left brace.
+         */
+        private final Pattern unknownOpener;
 
         /**
          * @param sourceFile   the file the line came from, or {@code null} when parsing a bare line
@@ -484,17 +641,28 @@ final class JtParser {
          * @param syntax       the delimiters of the template
          * @param columnOffset the number of characters removed from the line before it reached this parser (an
          *                     escaped prefix), added to reported columns so they match the source file
+         * @param warnings     receives a message for each construct that is accepted but probably not what the author
+         *                     meant
+         * @param startElement the {@code script} or {@code style} element the line starts inside, or {@code null}
+         * @param startTag     the text of the tag the line starts inside, or {@code null}
          */
         TextLineParser(final String input,
                        final String sourceFile,
                        final int lineNumber,
                        final Syntax syntax,
-                       final int columnOffset) {
+                       final int columnOffset,
+                       final Consumer<String> warnings,
+                       final String startElement,
+                       final String startTag) {
             super(input);
             this.sourceFile = sourceFile;
             this.lineNumber = lineNumber;
             this.syntax = syntax;
             this.columnOffset = columnOffset;
+            this.warnings = warnings;
+            this.startElement = startElement;
+            this.startTag = startTag;
+            this.unknownOpener = Pattern.compile(Pattern.quote(syntax.interpolationLead()) + "[a-zA-Z_][\\w]*\\{");
         }
 
         @Override
@@ -525,6 +693,7 @@ final class JtParser {
                     scanner.consume(syntax.interpolationLead() + context);
                     nodes.add(new BodyNode.ContextExpression(syntax.contexts().get(context), consumeExpression(start)));
                 } else if (scanner.follows(syntax.interpolation())) {
+                    warnIfUnsafeContext(nodes, text);
                     if (!text.isEmpty()) {
                         nodes.add(new BodyNode.RawText(text.toString()));
                         text.setLength(0);
@@ -532,6 +701,15 @@ final class JtParser {
                     final var start = scanner.getLocation();
                     scanner.consume(syntax.interpolationLead());
                     nodes.add(new BodyNode.Expression(consumeExpression(start)));
+                } else if (scanner.follows(unknownOpener)) {
+                    // Not a context, so text: CSS such as "#nav{" is legitimate, which is why this is only a warning,
+                    // and not one at all in a style element, where such selectors are expected
+                    final var start = scanner.getLocation();
+                    final String opener = scanner.consume(unknownOpener);
+                    if (!"style".equals(elementAfter(markupBefore(nodes, text), startElement))) {
+                        warnIfMistyped(opener, start);
+                    }
+                    text.append(opener);
                 } else {
                     text.append(scanner.consumeChar());
                 }
@@ -540,6 +718,115 @@ final class JtParser {
                 nodes.add(new BodyNode.RawText(text.toString()));
             }
             return nodes;
+        }
+
+        /**
+         * Warns when a plain interpolation, which only HTML-escapes, is where that cannot make the value safe: the
+         * start of a URL attribute (a {@code javascript:} URL gets through), JavaScript or JSON in an attribute, and
+         * the body of a script or style element. The advice names a context only if the out type declares it, so out
+         * types for other languages are never warned. Writing to any named context silences the warning.
+         */
+        private void warnIfUnsafeContext(final List<BodyNode> nodes, final StringBuilder text) {
+            final String markup = markupBefore(nodes, text);
+
+            final String element = elementAfter(markup, startElement);
+            final String tag = openTagAfter(markup, element);
+            final String problem;
+            final String context;
+            final Matcher script;
+            final Matcher url;
+            if ("script".equals(element)) {
+                problem = "inside a <script> element, where HTML escaping does not make it safe";
+                context = "js";
+            } else if ("style".equals(element)) {
+                problem = "inside a <style> element, where HTML escaping does not make it safe";
+                context = "css";
+            } else if (tag == null) {
+                // Not inside a tag, so what looks like an attribute is only text
+                return;
+            } else if ((script = SCRIPT_ATTRIBUTE_OPEN.matcher(tag)).find()) {
+                problem = "inside the " + script.group(1) + " attribute, which holds JavaScript or JSON, where HTML"
+                    + " escaping cannot make it safe";
+                context = "json";
+            } else if ((url = URL_ATTRIBUTE_START.matcher(tag)).find()) {
+                problem = "at the start of the " + url.group(1) + " attribute, where HTML escaping does not stop a"
+                    + " 'javascript:' URL";
+                context = "url";
+            } else {
+                return;
+            }
+            if (!syntax.contexts().containsKey(context)) {
+                return;
+            }
+            final var location = scanner.getLocation();
+            // JSON and JavaScript values write their own quotes around a string
+            final String quotes = context.equals("json") || context.equals("js")
+                ? ", and drop any quotes around it, as it writes its own"
+                : "";
+            warnings.accept(where(location) + "'" + syntax.interpolation() + "' is "
+                + problem + "; use '" + syntax.contextOpener(context) + "'" + quotes + " (writing to any named"
+                + " context silences this warning)");
+        }
+
+        /**
+         * The start of a warning: the file, line and column of the location, with a trailing separator.
+         */
+        private String where(final LookaheadReader.Location location) {
+            return (sourceFile == null ? "" : sourceFile + ": ") + "line " + lineNumber + ", column "
+                + (location.getColumn() + columnOffset) + ": ";
+        }
+
+        /**
+         * The markup of the line before the scanner, with each interpolation as {@code ?}, preceded by the tag the
+         * line starts inside.
+         */
+        private String markupBefore(final List<BodyNode> nodes, final StringBuilder text) {
+            final StringBuilder before = new StringBuilder();
+            if (startTag != null) {
+                before.append(startTag).append('\n');
+            }
+            for (final BodyNode node : nodes) {
+                before.append(node instanceof BodyNode.RawText(final String raw) ? raw : "?");
+            }
+            return before.append(text).toString();
+        }
+
+        /**
+         * Warns when the opener of a named write is one edit away from a context of the out type, as that is far more
+         * likely to be a typo than text that happens to look like an opener.
+         */
+        private void warnIfMistyped(final String opener, final LookaheadReader.Location location) {
+            final String name = opener.substring(syntax.interpolationLead().length(), opener.length() - 1);
+            for (final String context : syntax.contexts().keySet()) {
+                if (context.length() >= 3 && oneEditApart(name, context)) {
+                    warnings.accept(where(location) + "'" + opener
+                        + "' is not an output context of this out type, so it is emitted as text; did you"
+                        + " mean '" + syntax.contextOpener(context) + "'? The contexts are "
+                        + String.join(", ", new TreeSet<>(syntax.contexts().keySet())));
+                    return;
+                }
+            }
+        }
+
+        /**
+         * Whether the names differ by one inserted, removed or changed character, or two adjacent characters swapped.
+         */
+        private static boolean oneEditApart(final String a, final String b) {
+            if (a.equals(b) || Math.abs(a.length() - b.length()) > 1) {
+                return false;
+            }
+            int i = 0;
+            while (i < Math.min(a.length(), b.length()) && a.charAt(i) == b.charAt(i)) {
+                i++;
+            }
+            if (a.length() != b.length()) {
+                final String longer = a.length() > b.length() ? a : b;
+                final String shorter = a.length() > b.length() ? b : a;
+                return longer.substring(i + 1).equals(shorter.substring(i));
+            }
+            return a.substring(i + 1).equals(b.substring(i + 1))
+                || (i + 1 < a.length() && a.charAt(i) == b.charAt(i + 1) && a.charAt(i + 1) == b.charAt(i)
+                && a.substring(i + 2).equals(b.substring(i + 2)));
         }
 
         /**

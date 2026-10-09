@@ -101,6 +101,11 @@ public final class HtmlOut extends Out {
      * Writes a value as JSON inside a quoted attribute ({@code hx-vals}, {@code hx-headers}, ...): JSON-encodes it,
      * then attribute-escapes the result.
      * <p>
+     * This is also the context for a value inside an attribute that holds JavaScript, such as an event handler
+     * ({@code onclick}), Alpine's {@code x-data} or {@code @click}, or htmx's {@code hx-on}: a JSON literal is a
+     * JavaScript literal, and the attribute escaping keeps it inside the quotes. Use it rather than
+     * {@link #writeJs(Object)}, which is for the body of a {@code <script>} element only.
+     * <p>
      * Accepts a {@link JsonValue}, {@code null}, {@link String}, {@link Number}, {@link Boolean}, {@link Map} with
      * {@link String} keys, {@link Iterable} and object array, the last three of which may nest any of these.
      *
@@ -118,6 +123,10 @@ public final class HtmlOut extends Out {
      * {@code <}, {@code >} and {@code &} are written as {@code \}{@code u} escapes, so the value cannot close the
      * script element or open a comment ({@code </script}, {@code <!--}); U+2028 and U+2029 are escaped too. Accepts
      * the same values as {@link #writeJson(Object)}. Do not use inside quotes: the output carries its own.
+     * <p>
+     * Only for the body of a {@code <script>} element. The output is not attribute-escaped and a JSON string contains
+     * {@code "}, so inside an attribute (an event handler, {@code x-data}, {@code hx-on}) it would end the attribute
+     * value early: use {@link #writeJson(Object)} there.
      *
      * @param value the value
      * @throws IllegalArgumentException if the value (or a nested value) cannot be represented as JSON

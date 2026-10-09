@@ -147,7 +147,12 @@ public final class JavaOut extends Out {
      * Writes a value as text inside a Javadoc or block comment. The value is HTML-escaped (Javadoc is HTML), and
      * {@code @}, {@code \} and a {@code /} that follows {@code *} are written as character references, so the value can
      * neither close the comment, start a tag or inline tag, nor smuggle in a {@code \}{@code u} escape (which Java
-     * translates inside comments too, so {@code \}{@code u002a/} would end one). {@code null} writes nothing.
+     * translates inside comments too, so {@code \}{@code u002a/} would end one). A {@code /} that starts the value is
+     * escaped too, as the template text before it may end in {@code *} and the output cannot see that.
+     * {@code null} writes nothing.
+     * <p>
+     * Only for a block or Javadoc comment. In a {@code //} comment a line break in the value would end the comment
+     * and leave the rest as code.
      * <p>
      * Line prefixes (<code> * </code>) are the template's concern; a multi-line value is written as it is.
      *
@@ -160,7 +165,8 @@ public final class JavaOut extends Out {
         }
         final var s = String.valueOf(value);
         final var result = new StringBuilder(s.length() + 8);
-        char previous = 0;
+        // The text before the value is the template's and may end in '*', so a leading '/' is escaped too
+        char previous = '*';
         for (int i = 0; i < s.length(); i++) {
             final char c = s.charAt(i);
             switch (c) {
