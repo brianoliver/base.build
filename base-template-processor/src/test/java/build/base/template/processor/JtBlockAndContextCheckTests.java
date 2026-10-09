@@ -97,7 +97,7 @@ class JtBlockAndContextCheckTests {
     @Test
     void shouldNotReportBlockMismatchesAfterABlockDirectiveFailedToParse() {
         final var outcome = parse("""
-            @fragment row() {
+            @slot row() {
             <td>#{x}</td>
             @}
             """);
@@ -109,7 +109,7 @@ class JtBlockAndContextCheckTests {
     void shouldNotReportAnUnclosedBlockAfterABlockDirectiveFailedToParse() {
         final var outcome = parse("""
             @if (x.isEmpty()) {
-            @fragment row() {
+            @slot row() {
             """);
 
         assertThat(messages(outcome)).singleElement().asString().contains("not supported yet");

@@ -58,6 +58,9 @@ final class JtParser {
     private static final Pattern LOOKS_LIKE_STATEMENT =
         Pattern.compile("[a-z_$][\\w$]*(\\.[\\w$]+)*\\(.*\\)\\s*;");
 
+    // The argument of a fragment directive: a name and a parenthesised parameter list, as in a method declaration
+    private static final Pattern FRAGMENT_DECLARATION = Pattern.compile("([a-zA-Z_$][\\w$]*)\\s*\\((.*)\\)");
+
     // A URL attribute whose value is just starting: an interpolation here could supply the scheme. A fixed prefix such
     // as href="/tasks/#{id}" cannot, so it does not match
     private static final Pattern URL_ATTRIBUTE_START = Pattern.compile(
@@ -263,6 +266,22 @@ final class JtParser {
                         }
                         body.add(new BodyNode.Include(argument));
                     }
+                    case "fragment" -> {
+                        final Matcher declaration = FRAGMENT_DECLARATION.matcher(argument);
+                        if (!declaration.matches()) {
+                            throw directiveError(sourceFile, lineNumber, column,
+                                                 syntax.prefix() + "fragment requires a name and parameters, as in '"
+                                                 + syntax.prefix() + "fragment row(Task task)'");
+                        }
+                        body.add(new BodyNode.FragmentStart(declaration.group(1), declaration.group(2).trim()));
+                    }
+                    case "endfragment" -> {
+                        if (!argument.isEmpty()) {
+                            throw directiveError(sourceFile, lineNumber, column,
+                                                 "unexpected content after " + syntax.prefix() + "endfragment");
+                        }
+                        body.add(new BodyNode.FragmentEnd());
+                    }
                     case "java" -> {
                         if (argument.isEmpty()) {
                             throw directiveError(sourceFile, lineNumber, column,
@@ -344,6 +363,30 @@ final class JtParser {
         private final String sourceFile;
         private final Function<String, Syntax> outSyntax;
         private final Consumer<String> warnings;
+
+        /**
+         * A fragment whose end has not been seen.
+         */
+        private record OpenFragment(String name, int line, int column, int depth, int[] block) {
+        }
+
+        private OpenFragment openFragment;
+
+        /**
+         * The number of fragments started inside the open fragment, whose ends are to be ignored.
+         */
+        private int nestedStarts;
+
+        /**
+         * Whether every fragment directive so far was parsed, so that a fragment that is open or has nothing to close is
+         * real rather than a consequence of a directive that failed.
+         */
+        private boolean fragmentsKnown = true;
+
+        /**
+         * The names of the types generated for the fragments so far.
+         */
+        private final Set<String> fragmentTypes = new HashSet<>();
 
         JtFileParser(final String content,
                      final String sourceFile,
@@ -477,13 +520,19 @@ final class JtParser {
                     if (line.trim().startsWith(syntax.prefix()) && (line.indexOf('{') >= 0 || line.indexOf('}') >= 0)) {
                         blocksKnown = false;
                     }
+                    // Likewise a fragment directive that was dropped leaves it unknown which fragments are open
+                    if (line.trim().startsWith(syntax.prefix() + "fragment")
+                        || line.trim().startsWith(syntax.prefix() + "endfragment")) {
+                        fragmentsKnown = false;
+                    }
                 }
                 // Only text is markup: a directive line is Java, whose strings may well mention tags
                 final var added = body.subList(first, body.size());
                 final boolean directive = failed
                     ? line.trim().startsWith(syntax.prefix()) && !line.trim().startsWith(syntax.escapedPrefix())
                     : !added.isEmpty() && added.stream()
-                    .allMatch(n -> n instanceof BodyNode.CodeLine || n instanceof BodyNode.Include);
+                    .allMatch(n -> n instanceof BodyNode.CodeLine || n instanceof BodyNode.Include
+                        || n instanceof BodyNode.FragmentStart || n instanceof BodyNode.FragmentEnd);
                 if (!directive) {
                     final String markup = (openTag == null ? "" : openTag + "\n") + withoutExpressions(line, syntax);
                     element = elementAfter(markup, element);
@@ -492,10 +541,17 @@ final class JtParser {
                 while (lines.size() < body.size()) {
                     lines.add(lineNumber);
                 }
+                trackFragments(body.subList(first, body.size()), open, blocksKnown, lineNumber,
+                    line.indexOf(syntax.prefix()) + 1, className, params, imports);
                 if (blocksKnown) {
                     trackBlocks(body.subList(first, body.size()), open, lineNumber,
                         line.indexOf(syntax.prefix()) + 1, syntax);
                 }
+            }
+            if (fragmentsKnown && openFragment != null) {
+                reportTranslated(directiveError(sourceFile, openFragment.line(), openFragment.column(),
+                    "fragment " + openFragment.name() + " is never closed (missing '" + syntax.prefix()
+                    + "endfragment')"));
             }
             // Javac would report these in the generated code, far from the template line that caused them
             final var unclosed = open.descendingIterator();
@@ -516,6 +572,106 @@ final class JtParser {
             }
 
             return new ParsedTemplate(packageName, imports, outType, className, params, body, sourceFile, lines);
+        }
+
+        /**
+         * Checks the fragment directives among {@code nodes}, which came from one line: fragments do not nest, are
+         * closed, have names that give distinct nested types, and leave the blocks of the code around them balanced.
+         *
+         * @param open        the blocks open before the line
+         * @param blocksKnown whether {@code open} can be relied on
+         * @param params      the parameters of the template
+         * @param imports     the imports of the template
+         */
+        private void trackFragments(final List<BodyNode> nodes,
+                                    final Deque<int[]> open,
+                                    final boolean blocksKnown,
+                                    final int lineNumber,
+                                    final int column,
+                                    final String className,
+                                    final String params,
+                                    final List<String> imports) {
+            if (!fragmentsKnown) {
+                return;
+            }
+            for (final BodyNode node : nodes) {
+                if (node instanceof BodyNode.FragmentStart start) {
+                    final String name = start.name();
+                    final String type = start.typeName();
+                    if (openFragment != null) {
+                        reportTranslated(directiveError(sourceFile, lineNumber, column,
+                            "fragments cannot be nested (fragment " + openFragment.name() + " is still open)"));
+                        // Its end is not a stray end, and it does not close the fragment that is open
+                        nestedStarts++;
+                        continue;
+                    } else if (type.equals(className)) {
+                        reportTranslated(directiveError(sourceFile, lineNumber, column,
+                            "fragment " + name + " would generate a type with the name of the template"));
+                    } else if (hidesAType(type, imports, params + "," + start.params())) {
+                        reportTranslated(directiveError(sourceFile, lineNumber, column,
+                            "fragment " + name + " would generate the type " + type + ", which hides the type of"
+                            + " that name that the template or the fragment uses (imported, from java.lang or"
+                            + " named in a parameter list)"));
+                    } else if (!fragmentTypes.add(type)) {
+                        reportTranslated(directiveError(sourceFile, lineNumber, column,
+                            "fragment " + name + " is already declared (fragment names are compared by the type"
+                            + " they generate, " + type + ")"));
+                    }
+                    openFragment = new OpenFragment(name, lineNumber, column, open.size(), open.peek());
+                } else if (node instanceof BodyNode.FragmentEnd) {
+                    if (nestedStarts > 0) {
+                        nestedStarts--;
+                    } else if (openFragment == null) {
+                        reportTranslated(directiveError(sourceFile, lineNumber, column,
+                            "endfragment has no fragment to close"));
+                    } else {
+                        // A block that was closed and another opened in its place, as in '@} else {', has a different
+                        // innermost block even though as many are open
+                        if (blocksKnown && (open.size() != openFragment.depth() || open.peek() != openFragment.block())) {
+                            reportTranslated(directiveError(sourceFile, openFragment.line(), openFragment.column(),
+                                "fragment " + openFragment.name() + " must contain whole blocks: a block opened or"
+                                + " closed inside it is not closed or opened inside it"));
+                        }
+                        openFragment = null;
+                    }
+                }
+            }
+        }
+
+        /**
+         * Whether a type nested in the template with the name {@code type} would hide a type the template can use by
+         * its simple name: one it imports (by name, or on demand from a package of the JDK), one from
+         * {@code java.lang}, or one named in the parameter lists {@code params}. A type of the template's own package
+         * cannot be seen from here.
+         */
+        private static boolean hidesAType(final String type, final List<String> imports, final String params) {
+            for (final Matcher word = Pattern.compile("[\\w$]+").matcher(params); word.find();) {
+                if (word.group().equals(type)) {
+                    return true;
+                }
+            }
+            for (final String declaration : imports) {
+                final String imported = declaration.substring("import ".length()).trim();
+                if (imported.startsWith("static ")) {
+                    continue;
+                }
+                if (imported.endsWith("." + type)) {
+                    return true;
+                }
+                if (imported.endsWith(".*") && existsInJdk(imported.substring(0, imported.length() - 1) + type)) {
+                    return true;
+                }
+            }
+            return existsInJdk("java.lang." + type);
+        }
+
+        private static boolean existsInJdk(final String name) {
+            try {
+                Class.forName(name, false, null);
+                return true;
+            } catch (final ClassNotFoundException e) {
+                return false;
+            }
         }
 
         /**

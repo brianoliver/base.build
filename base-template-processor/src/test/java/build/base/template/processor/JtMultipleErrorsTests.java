@@ -42,7 +42,7 @@ class JtMultipleErrorsTests {
             fine
             @include
             fine
-            @fragment row()
+            @slot row()
             @end
             """);
 

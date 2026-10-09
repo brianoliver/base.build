@@ -810,7 +810,8 @@ template TasksTemplate(String title, List<String> items) {
 - The header is read in a fixed order: `out <Type>;` (required, must be first; the `Out` class, simple or qualified, the template writes to), then optional `option` lines, then optional `package` and `import` lines (which belong to the generated Java record; an omitted `package` is inferred from the file's directory under `src/main/jt`, and a declared one is checked against it), then `template Name(params) {`
 - A file holds exactly one template. The declaration must end with `{`, and the body must end with an `@end` line; anything after `@end` is an error
 - `#{expr}` — interpolated expression; calls `out.write(expr)`
-- A line starting with `@` is a directive only when the word after it is in the closed set: `for if else while switch case default do try catch finally var final` (the line, minus `@`, is emitted as Java), `@}` (closing brace, may continue as `@} else {`), `@include`, `@java` and `@end`. Any other `@` line is plain text, so `@Override`, `@media` and `@click=...` need no escape. `fragment`, `endfragment`, `slot` and `flush` are reserved and rejected until implemented
+- A line starting with `@` is a directive only when the word after it is in the closed set: `for if else while switch case default do try catch finally var final` (the line, minus `@`, is emitted as Java), `@}` (closing brace, may continue as `@} else {`), `@include`, `@fragment`, `@endfragment`, `@java` and `@end`. Any other `@` line is plain text, so `@Override`, `@media` and `@click=...` need no escape. `slot` and `flush` are reserved and rejected until implemented
+- `@fragment name(Type param, ...)` … `@endfragment` — a part of the template that is rendered in place, by `new Name(param, ...).render(out)` with the variables of the same names, and is also generated as a nested record `Name` (the name with its first letter upper-cased) implementing `Template<Out>`, so it can be rendered on its own (`new TasksPage.Row(task)`). A fragment sees only its parameters, not the template's: it is a separate type. Fragments do not nest, must be closed, must contain whole blocks, and need distinct names that differ from the template's. The generated type must not share its name with a type the template imports, gets from `java.lang`, or names in a parameter list (checked); nor with a type of the template's own package (not checked, and javac reports it)
 - `@java <statement>` — any other Java statement, emitted into `render()` (for example `@java out.raw(x);`)
 - `@include <expr>` — calls `<expr>.render(out)` for sub-template composition; the expression is required
 - `out` is an implicit variable inside `render`, so `@java` can call it directly (`@java out.raw(...);`)
@@ -1386,7 +1387,7 @@ Optional<List<String>> cycle = Graphs.findCycle(g); // empty if DAG
 - Create a `.jt` file under `src/main/jt/<package>/MyTemplate.jt`
 - Annotate `module-info.java` with `@build.base.template.ProcessTemplates`
 - Add `base-template` as a runtime dependency and `base-template-processor` to `annotationProcessorPaths`
-- Use `#{expr}` for interpolation, `@for`/`@if`/`@}` for control flow, `@include expr` for composition
+- Use `#{expr}` for interpolation, `@for`/`@if`/`@}` for control flow, `@include expr` for composition, `@fragment name(params)` … `@endfragment` for a part that also renders on its own
 - Choose `HtmlOut` for HTML output (auto-escapes user values) or `TextOut` for plain text
 
 **To parse and compare versions:**
