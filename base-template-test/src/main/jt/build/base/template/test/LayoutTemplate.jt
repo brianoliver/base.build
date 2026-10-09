@@ -1,0 +1,14 @@
+out HtmlOut;
+
+package build.base.template.test;
+
+import build.base.template.Template;
+
+template LayoutTemplate(String title, Template<HtmlOut> body) {
+<html>
+<head><title>#{title}</title></head>
+<body>
+@include body
+</body>
+</html>
+@end
