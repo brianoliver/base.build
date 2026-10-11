@@ -42,7 +42,7 @@ class JtMultipleErrorsTests {
             fine
             @include
             fine
-            @slot row()
+            @flush row()
             @end
             """);
 

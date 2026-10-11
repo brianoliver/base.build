@@ -60,12 +60,12 @@ record Syntax(String prefix, String interpolation, Map<String, String> contexts)
      */
     static final Set<String> DIRECTIVES = Set.of(
         "for", "if", "else", "while", "switch", "case", "default", "do", "try", "catch", "finally",
-        "var", "final", "include", "fragment", "endfragment", "slot", "flush", "end", "java");
+        "var", "final", "include", "fragment", "endfragment", "slot", "fill", "endfill", "flush", "end", "java");
 
     /**
      * Directives that are reserved but not implemented yet.
      */
-    static final Set<String> RESERVED = Set.of("slot", "flush");
+    static final Set<String> RESERVED = Set.of("flush");
 
     Syntax(final String prefix, final String interpolation) {
         this(prefix, interpolation, Map.of());

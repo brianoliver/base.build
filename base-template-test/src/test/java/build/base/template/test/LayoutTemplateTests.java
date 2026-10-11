@@ -1,14 +1,17 @@
 package build.base.template.test;
 
 import build.base.template.HtmlOut;
+import build.base.template.Slots;
+import build.base.template.Template;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * A page renders its body inside a layout, where the layout includes it.
+ * A page renders its body inside a layout, at the layout's slot.
  *
  * @author reed.vonredwitz
  * @since Oct-2026
@@ -36,7 +39,8 @@ class LayoutTemplateTests {
     @Test
     void shouldRenderAnyBodyInTheLayout() {
         final var out = new HtmlOut();
-        new LayoutTemplate("T", o -> o.raw("<p>hi</p>\n")).render(out);
+        new LayoutTemplate("T", new Slots<>(Map.<String, Template<HtmlOut>>of(
+            Slots.BODY, o -> o.raw("<p>hi</p>\n")))).render(out);
 
         assertThat(out.toString()).contains("<body>\n<p>hi</p>\n</body>");
     }

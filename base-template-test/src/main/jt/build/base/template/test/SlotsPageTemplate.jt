@@ -1,0 +1,21 @@
+out HtmlOut;
+
+package build.base.template.test;
+
+import java.util.List;
+
+template SlotsPageTemplate(String title, List<String> items) {
+@include SlotsLayoutTemplate(title) {
+@fill head
+<meta name="count" content="#{items.size()}">
+@endfill
+<ul>
+@for (var item : items) {
+  <li>#{item}</li>
+@}
+</ul>
+@fill footer
+<small>#{title}</small>
+@endfill
+@}
+@end

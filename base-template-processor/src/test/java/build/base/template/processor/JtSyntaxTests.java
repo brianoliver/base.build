@@ -138,9 +138,9 @@ class JtSyntaxTests {
 
     @Test
     void reservedDirectiveIsAnError() {
-        assertThatThrownBy(() -> parseBody("@slot row\n"))
+        assertThatThrownBy(() -> parseBody("@flush row\n"))
             .isInstanceOf(JtParseException.class)
-            .hasMessageContaining("@slot is not supported yet");
+            .hasMessageContaining("@flush is not supported yet");
     }
 
     @Test
