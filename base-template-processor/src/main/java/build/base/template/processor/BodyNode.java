@@ -52,7 +52,7 @@ sealed interface BodyNode {
     /**
      * The start of an include with a body, <code>@include Layout(title) &#123;</code>: the nodes up to the matching
      * {@link IncludeEnd} are a template that is passed to the included template as its last argument, for it to render
-     * with an {@code include}.
+     * with a slot.
      *
      * @param type the name of the included template type
      * @param args the arguments for the included template, before the body; may be empty
@@ -64,6 +64,30 @@ sealed interface BodyNode {
      * The end of an include with a body: the closing brace line that matches an {@link IncludeStart}.
      */
     record IncludeEnd() implements BodyNode {
+    }
+
+    /**
+     * Renders a part of the body of an include, from the {@code Slots} parameter of the template.
+     *
+     * @param name the name of the part, or {@code null} for the content that is in no fill
+     */
+    record Slot(String name) implements BodyNode {
+    }
+
+    /**
+     * The start of a named part of the body of an include, <code>@fill head</code>: the nodes up to the matching
+     * {@link FillEnd} are given to the included template under the name, and are not a part of the rest of the body.
+     *
+     * @param name the name of the part, which the included template renders with a slot of that name
+     */
+    record FillStart(String name) implements BodyNode {
+    }
+
+    /**
+     * The end of a named part of the body of an include, <code>@endfill</code>, which closes the {@link FillStart}
+     * before it.
+     */
+    record FillEnd() implements BodyNode {
     }
 
     /**

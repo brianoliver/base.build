@@ -2,13 +2,13 @@ out HtmlOut;
 
 package build.base.template.test;
 
-import build.base.template.Template;
+import build.base.template.Slots;
 
-template LayoutTemplate(String title, Template<HtmlOut> body) {
+template LayoutTemplate(String title, Slots<HtmlOut> slots) {
 <html>
 <head><title>#{title}</title></head>
 <body>
-@include body
+@slot
 </body>
 </html>
 @end

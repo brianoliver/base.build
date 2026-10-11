@@ -28,7 +28,9 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.function.Consumer;
@@ -60,6 +62,8 @@ final class JtParser {
 
     // The argument of a fragment directive: a name and a parenthesised parameter list, as in a method declaration
     private static final Pattern FRAGMENT_DECLARATION = Pattern.compile("([a-zA-Z_$][\\w$]*)\\s*\\((.*)\\)");
+
+    private static final Pattern SIMPLE_NAME = Pattern.compile("[a-zA-Z_$][\\w$]*");
 
     // The argument of an include with a body: the template type, its arguments and the brace that opens the body
     private static final Pattern INCLUDE_BLOCK =
@@ -281,6 +285,34 @@ final class JtParser {
                             body.add(new BodyNode.Include(argument));
                         }
                     }
+                    case "slot" -> {
+                        if (!argument.isEmpty() && !SIMPLE_NAME.matcher(argument).matches()) {
+                            throw directiveError(sourceFile, lineNumber, column,
+                                                 syntax.prefix() + "slot takes the name of a part, or nothing for the"
+                                                 + " content that is in no " + syntax.prefix() + "fill");
+                        }
+                        body.add(new BodyNode.Slot(argument.isEmpty() ? null : argument));
+                    }
+                    case "fill" -> {
+                        if (!SIMPLE_NAME.matcher(argument).matches()) {
+                            throw directiveError(sourceFile, lineNumber, column,
+                                                 syntax.prefix() + "fill requires a name, as in '" + syntax.prefix()
+                                                 + "fill head'");
+                        }
+                        if (argument.equals(CodeGenerator.BODY_SLOT)) {
+                            throw directiveError(sourceFile, lineNumber, column,
+                                                 "'" + CodeGenerator.BODY_SLOT + "' is the name of the content that is in no "
+                                                 + syntax.prefix() + "fill, so it cannot be filled");
+                        }
+                        body.add(new BodyNode.FillStart(argument));
+                    }
+                    case "endfill" -> {
+                        if (!argument.isEmpty()) {
+                            throw directiveError(sourceFile, lineNumber, column,
+                                                 "unexpected content after " + syntax.prefix() + "endfill");
+                        }
+                        body.add(new BodyNode.FillEnd());
+                    }
                     case "fragment" -> {
                         final Matcher declaration = FRAGMENT_DECLARATION.matcher(argument);
                         if (!declaration.matches()) {
@@ -382,10 +414,23 @@ final class JtParser {
         /**
          * A fragment whose end has not been seen.
          */
-        private record OpenFragment(String name, int line, int column, int depth, int[] block) {
+        private record OpenFragment(String name, String params, int line, int column, int depth, int[] block) {
         }
 
         private OpenFragment openFragment;
+
+        /**
+         * A fill whose end has not been seen. A fill that is misplaced has no block, and only stands in for its end.
+         */
+        private record OpenFill(String name, int line, int column, int[] block, OpenFragment fragment) {
+        }
+
+        private final Deque<OpenFill> openFills = new ArrayDeque<>();
+
+        /**
+         * The names filled so far in each include body, by the block it opened.
+         */
+        private final Map<int[], Set<String>> filled = new IdentityHashMap<>();
 
         /**
          * The number of fragments started inside the open fragment, whose ends are to be ignored.
@@ -481,11 +526,15 @@ final class JtParser {
             if (!followsKeyword("template")) {
                 throw new JtParseException(sourceFile + ": missing template declaration");
             }
+            final int templateLine = scanner.getLocation().getLine();
             consumeKeyword("template");
             skip();
             final String className = scanner.consume(QUALIFIED_NAME);
             skip();
             final String params = scanner.consumeBalanced('(', ')');
+            final List<String> declaredSlots = parseSlotsClause(params, imports);
+            // The named slots the body renders from the template itself, for the ones declared that it never does
+            final Set<String> usedSlots = new HashSet<>();
 
             // The declaration must end with "{", and nothing else may follow it on that line
             scanner.skipWhile(c -> c == ' ' || c == '\t');
@@ -548,7 +597,8 @@ final class JtParser {
                     : !added.isEmpty() && added.stream()
                     .allMatch(n -> n instanceof BodyNode.CodeLine || n instanceof BodyNode.Include
                         || n instanceof BodyNode.FragmentStart || n instanceof BodyNode.FragmentEnd
-                        || n instanceof BodyNode.IncludeStart);
+                        || n instanceof BodyNode.IncludeStart || n instanceof BodyNode.Slot
+                        || n instanceof BodyNode.FillStart || n instanceof BodyNode.FillEnd);
                 if (!directive) {
                     final String markup = (openTag == null ? "" : openTag + "\n") + withoutExpressions(line, syntax);
                     element = elementAfter(markup, element);
@@ -559,7 +609,11 @@ final class JtParser {
                 }
                 trackFragments(body.subList(first, body.size()), open, blocksKnown, lineNumber,
                     line.indexOf(syntax.prefix()) + 1, className, params, imports);
+                trackSlots(body.subList(first, body.size()), lineNumber, line.indexOf(syntax.prefix()) + 1,
+                    className, params, imports, syntax, declaredSlots, usedSlots);
                 if (blocksKnown) {
+                    trackFills(body.subList(first, body.size()), open, lineNumber,
+                        line.indexOf(syntax.prefix()) + 1, syntax);
                     trackBlocks(body.subList(first, body.size()), open, lineNumber,
                         line.indexOf(syntax.prefix()) + 1, syntax);
                 }
@@ -568,6 +622,12 @@ final class JtParser {
                 reportTranslated(directiveError(sourceFile, openFragment.line(), openFragment.column(),
                     "fragment " + openFragment.name() + " is never closed (missing '" + syntax.prefix()
                     + "endfragment')"));
+            }
+            for (final OpenFill fill : openFills) {
+                if (blocksKnown && fragmentsKnown && fill.block() != null) {
+                    reportTranslated(directiveError(sourceFile, fill.line(), fill.column(),
+                        "fill " + fill.name() + " is never closed (missing '" + syntax.prefix() + "endfill')"));
+                }
             }
             // Javac would report these in the generated code, far from the template line that caused them
             final var unclosed = open.descendingIterator();
@@ -587,7 +647,60 @@ final class JtParser {
                             scanner.getLocation());
             }
 
-            return new ParsedTemplate(packageName, imports, outType, className, params, body, sourceFile, lines);
+            if (declaredSlots != null && fragmentsKnown) {
+                for (final String slot : declaredSlots) {
+                    if (!usedSlots.contains(slot)) {
+                        warnings.accept(sourceFile + ": line " + templateLine + ": slot " + slot
+                            + " is declared by slots(...) but the template never renders it with '"
+                            + syntax.prefix() + "slot " + slot + "'");
+                    }
+                }
+            }
+
+            return new ParsedTemplate(packageName, imports, outType, className, params, body, sourceFile, lines,
+                                      declaredSlots);
+        }
+
+        /**
+         * Parses the optional {@code slots(a, b)} clause after the parameters of the template declaration: the names of
+         * the named slots the template renders, each a simple name other than the one of the content that is in no
+         * fill. Needs a parameter of the type {@code build.base.template.Slots} for them to be rendered from.
+         *
+         * @return the names, or {@code null} if there is no clause
+         */
+        private List<String> parseSlotsClause(final String params, final List<String> imports) {
+            scanner.skipWhile(c -> c == ' ' || c == '\t');
+            if (!followsKeyword("slots")) {
+                return null;
+            }
+            final var location = scanner.getLocation();
+            consumeKeyword("slots");
+            scanner.skipWhile(c -> c == ' ' || c == '\t');
+            final String list = scanner.consumeBalanced('(', ')');
+            final List<String> names = new ArrayList<>();
+            if (!list.isBlank()) {
+                for (final String part : list.split(",", -1)) {
+                    final String name = part.trim();
+                    if (!SIMPLE_NAME.matcher(name).matches()) {
+                        throw error("slots(...) takes the names of the slots of the template, as in 'slots(head, foot)'",
+                                    location);
+                    }
+                    if (name.equals(CodeGenerator.BODY_SLOT)) {
+                        throw error("'" + CodeGenerator.BODY_SLOT + "' is the name of the content that is in no fill,"
+                                        + " which every template with a Slots parameter has, so it is not declared",
+                                    location);
+                    }
+                    if (names.contains(name)) {
+                        throw error("slot " + name + " is declared twice in slots(...)", location);
+                    }
+                    names.add(name);
+                }
+            }
+            if (CodeGenerator.slotsParameter(params, imports) == null) {
+                throw error("slots(...) needs a parameter of the type build.base.template.Slots, which the template"
+                                + " has not (declare one, such as 'Slots<Out> slots')", location);
+            }
+            return names;
         }
 
         /**
@@ -633,7 +746,7 @@ final class JtParser {
                             "fragment " + name + " is already declared (fragment names are compared by the type"
                             + " they generate, " + type + ")"));
                     }
-                    openFragment = new OpenFragment(name, lineNumber, column, open.size(), open.peek());
+                    openFragment = new OpenFragment(name, start.params(), lineNumber, column, open.size(), open.peek());
                 } else if (node instanceof BodyNode.FragmentEnd) {
                     if (nestedStarts > 0) {
                         nestedStarts--;
@@ -735,6 +848,96 @@ final class JtParser {
                                 "the body of an include must be closed by '" + syntax.prefix() + "}' on a line of"
                                 + " its own"));
                         }
+                    }
+                }
+            }
+        }
+
+        /**
+         * Checks the fills among {@code nodes}, which came from one line: each is directly inside the body of an
+         * include, is closed, has a name not filled before in that body, and leaves the blocks and fragments around it
+         * as it found them.
+         *
+         * @param open the blocks open before the line
+         */
+        private void trackFills(final List<BodyNode> nodes,
+                                final Deque<int[]> open,
+                                final int lineNumber,
+                                final int column,
+                                final Syntax syntax) {
+            // Whether a fragment is open is unknown after a fragment directive failed
+            if (!fragmentsKnown) {
+                return;
+            }
+            for (final BodyNode node : nodes) {
+                if (node instanceof BodyNode.FillStart(final String name)) {
+                    final int[] block = open.peek();
+                    String misplaced = null;
+                    if (block == null || !isIncludeBody(block)) {
+                        misplaced = "fill " + name + " must be directly inside the body of an include";
+                    } else if (!openFills.isEmpty() && openFills.peek().block() == block) {
+                        misplaced = "fills cannot be nested (fill " + openFills.peek().name() + " is still open)";
+                    } else if (!filled.computeIfAbsent(block, b -> new HashSet<>()).add(name)) {
+                        misplaced = "fill " + name + " is already declared in this include";
+                    }
+                    if (misplaced != null) {
+                        reportTranslated(directiveError(sourceFile, lineNumber, column, misplaced));
+                    }
+                    openFills.push(new OpenFill(name, lineNumber, column, misplaced == null ? block : null,
+                                                openFragment));
+                } else if (node instanceof BodyNode.FillEnd) {
+                    if (openFills.isEmpty()) {
+                        reportTranslated(directiveError(sourceFile, lineNumber, column,
+                            syntax.prefix() + "endfill has no fill to close"));
+                        continue;
+                    }
+                    final OpenFill fill = openFills.pop();
+                    if (fill.block() != null && (open.peek() != fill.block() || openFragment != fill.fragment())) {
+                        reportTranslated(directiveError(sourceFile, fill.line(), fill.column(),
+                            "fill " + fill.name() + " must contain whole blocks and fragments, and be inside one"
+                            + " include body: a block, fragment or include body opened or closed inside it is not"
+                            + " closed or opened inside it"));
+                    }
+                }
+            }
+        }
+
+        /**
+         * Checks the slots among {@code nodes}, which came from one line: each renders a part of a {@code Slots}
+         * parameter of what it is in, the fragment that is open or else the template, so that needs one.
+         */
+        private void trackSlots(final List<BodyNode> nodes,
+                                final int lineNumber,
+                                final int column,
+                                final String className,
+                                final String params,
+                                final List<String> imports,
+                                final Syntax syntax,
+                                final List<String> declaredSlots,
+                                final Set<String> usedSlots) {
+            // Which fragment is open is unknown after a fragment directive failed
+            if (!fragmentsKnown) {
+                return;
+            }
+            final String scopeParams = openFragment == null ? params : openFragment.params();
+            final String scope = openFragment == null ? "template " + className : "fragment " + openFragment.name();
+            for (final BodyNode node : nodes) {
+                if (!(node instanceof BodyNode.Slot(final String name))) {
+                    continue;
+                }
+                if (CodeGenerator.slotsParameter(scopeParams, imports) == null) {
+                    reportTranslated(directiveError(sourceFile, lineNumber, column,
+                        syntax.prefix() + "slot needs a parameter of the type build.base.template.Slots, which "
+                        + scope + " has not (declare one, such as 'Slots<Out> slots')"));
+                } else if (openFragment == null && name != null) {
+                    // A fragment is a type of its own, with its own Slots, which the template does not declare
+                    usedSlots.add(name);
+                    if (declaredSlots != null && !name.equals(CodeGenerator.BODY_SLOT)
+                        && !declaredSlots.contains(name)) {
+                        reportTranslated(directiveError(sourceFile, lineNumber, column,
+                            "slot " + name + " is not declared by slots(...) of template " + className
+                            + " (its slots are " + (declaredSlots.isEmpty() ? "none" : String.join(", ", declaredSlots))
+                            + ")"));
                     }
                 }
             }

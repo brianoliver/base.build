@@ -1,0 +1,20 @@
+out HtmlOut;
+
+package build.base.template.test;
+
+import build.base.template.Slots;
+
+template SlotsLayoutTemplate(String title, Slots<HtmlOut> slots) slots(head, footer) {
+<html>
+<head>
+<title>#{title}</title>
+@slot head
+</head>
+<body>
+@slot
+<footer>
+@slot footer
+</footer>
+</body>
+</html>
+@end

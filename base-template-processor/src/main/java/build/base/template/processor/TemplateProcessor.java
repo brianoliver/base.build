@@ -25,11 +25,14 @@ import java.io.UncheckedIOException;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.StringJoiner;
 import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.stream.Stream;
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.RoundEnvironment;
@@ -42,6 +45,7 @@ import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
+import javax.lang.model.element.VariableElement;
 import javax.tools.Diagnostic;
 import javax.tools.StandardLocation;
 
@@ -53,6 +57,9 @@ public final class TemplateProcessor extends AbstractProcessor {
 
     /** The {@code .jt} file that produced each generated class, to detect two templates generating the same one. */
     private final Map<String, Path> generated = new HashMap<>();
+
+    /** The templates that were generated, by the name of the class, to check includes against the templates they name. */
+    private final Map<String, ParsedTemplate> templates = new TreeMap<>();
 
     @Override
     public SourceVersion getSupportedSourceVersion() {
@@ -87,7 +94,141 @@ public final class TemplateProcessor extends AbstractProcessor {
                 "base-template-processor: failed to walk " + jtSourceDir + ": " + e.getMessage());
         }
 
+        warnAboutFillsThatFillNothing();
+
         return false;
+    }
+
+    /**
+     * Warns about each fill of an include of a template with a {@code Slots} parameter that is not a slot of that
+     * template, which renders nothing. This is a warning, as the template may render the part some other way (as in
+     * {@code @java slots.render(name, out);}), and an include of a type that is no template of this build is not checked.
+     */
+    private void warnAboutFillsThatFillNothing() {
+        for (final ParsedTemplate page : templates.values()) {
+            final List<BodyNode> body = page.body();
+            for (int i = 0; i < body.size(); i++) {
+                if (!(body.get(i) instanceof BodyNode.IncludeStart(final String type, final String args))) {
+                    continue;
+                }
+                final ParsedTemplate layout = templateNamed(page, type);
+                final Set<String> slots = layout != null ? CodeGenerator.fillableSlots(layout)
+                    : compiledSlots(page, type);
+                if (slots == null) {
+                    continue;
+                }
+                final String layoutName = layout != null ? layout.className() : type;
+                int nested = 0;
+                for (int j = i + 1; j < body.size() && nested >= 0; j++) {
+                    final BodyNode node = body.get(j);
+                    if (node instanceof BodyNode.IncludeStart) {
+                        nested++;
+                    } else if (node instanceof BodyNode.IncludeEnd) {
+                        nested--;
+                    } else if (nested == 0 && node instanceof BodyNode.FillStart(final String name)
+                               && !slots.contains(name)) {
+                        final int line = j < page.lines().size() ? page.lines().get(j) : 0;
+                        processingEnv.getMessager().printMessage(Diagnostic.Kind.WARNING,
+                            "base-template-processor: " + page.sourceFile() + (line > 0 ? ":" + line : "")
+                            + ": fill " + name + " is not a slot of " + layoutName + " (its slots are "
+                            + (slots.isEmpty() ? "none" : String.join(", ", slots)) + ")"
+                            + didYouMean(name, slots) + ", so it renders nothing");
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * The named slots of a layout that is compiled already, such as one from another module, which its generated class
+     * lists in a constant, or {@code null} if the type is not found or is not such a layout.
+     */
+    private Set<String> compiledSlots(final ParsedTemplate from, final String type) {
+        for (final String candidate : candidateNames(from, type)) {
+            final TypeElement element = processingEnv.getElementUtils().getTypeElement(candidate);
+            if (element == null) {
+                continue;
+            }
+            for (final Element member : element.getEnclosedElements()) {
+                if (member instanceof VariableElement field
+                    && field.getSimpleName().contentEquals(CodeGenerator.SLOTS_CONSTANT)
+                    && field.getModifiers().contains(Modifier.STATIC)
+                    && field.getConstantValue() instanceof String names) {
+                    final Set<String> slots = new TreeSet<>();
+                    for (final String name : names.split(",")) {
+                        if (!name.isEmpty()) {
+                            slots.add(name);
+                        }
+                    }
+                    return slots;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** A hint at the slot a misspelt fill was likely meant for: the slot one or two edits away, or nothing. */
+    private static String didYouMean(final String name, final Set<String> slots) {
+        String best = null;
+        int bestDistance = 3;
+        for (final String slot : slots) {
+            final int distance = editDistance(name, slot);
+            if (distance < bestDistance) {
+                best = slot;
+                bestDistance = distance;
+            }
+        }
+        return best == null ? "" : "; did you mean " + best + "?";
+    }
+
+    private static int editDistance(final String a, final String b) {
+        int[] previous = new int[b.length() + 1];
+        for (int j = 0; j <= b.length(); j++) {
+            previous[j] = j;
+        }
+        for (int i = 1; i <= a.length(); i++) {
+            final int[] current = new int[b.length() + 1];
+            current[0] = i;
+            for (int j = 1; j <= b.length(); j++) {
+                final int substitution = previous[j - 1] + (a.charAt(i - 1) == b.charAt(j - 1) ? 0 : 1);
+                current[j] = Math.min(substitution, Math.min(previous[j], current[j - 1]) + 1);
+            }
+            previous = current;
+        }
+        return previous[b.length()];
+    }
+
+    /**
+     * The template that a type named in an include of {@code from} is, or {@code null} if it is none of those that were
+     * generated: the type as written, or else in the package of {@code from} or one of its imports.
+     */
+    private ParsedTemplate templateNamed(final ParsedTemplate from, final String type) {
+        for (final String candidate : candidateNames(from, type)) {
+            final ParsedTemplate template = templates.get(candidate);
+            if (template != null) {
+                return template;
+            }
+        }
+        return null;
+    }
+
+    /** The qualified names a type named in an include of {@code from} can be: as written, or else in its package or imports. */
+    private static List<String> candidateNames(final ParsedTemplate from, final String type) {
+        final List<String> candidates = new ArrayList<>();
+        if (type.contains(".")) {
+            candidates.add(type);
+        } else {
+            candidates.add(from.packageName().isEmpty() ? type : from.packageName() + "." + type);
+            for (final String declaration : from.imports()) {
+                final String imported = declaration.substring("import ".length()).trim();
+                if (imported.endsWith("." + type)) {
+                    candidates.add(imported);
+                } else if (imported.endsWith(".*")) {
+                    candidates.add(imported.substring(0, imported.length() - 1) + type);
+                }
+            }
+        }
+        return candidates;
     }
 
     /**
@@ -118,6 +259,8 @@ public final class TemplateProcessor extends AbstractProcessor {
                     + " and " + jtFile);
                 return;
             }
+
+            templates.put(className, parsed);
 
             warnIfPathDoesNotMatchPackage(jtSourceDir, jtFile, parsed);
 
