@@ -2,7 +2,7 @@
  * #%L
  * base.build Flow
  * %%
- * Copyright (C) 2025 Workday Inc
+ * Copyright (C) 2026 The base.build Authors and Contributors
  * %%
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
