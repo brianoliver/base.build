@@ -16,8 +16,8 @@
     <url>https://github.com/Workday/base.build</url>
 
     <organization>
-        <name>Workday, Inc.</name>
-        <url>https://www.workday.com</url>
+        <name>star.build</name>
+        <url>https://github.com/orgs/star-build/</url>
     </organization>
 
     <inceptionYear>2026</inceptionYear>
@@ -32,7 +32,7 @@
     <developers>
         <developer>
             <name>Brian Oliver</name>
-            <email>brian.oliver@workday.com</email>
+            <email>brian.oliver@star.build</email>
             <roles>
                 <role>architect</role>
                 <role>developer</role>
@@ -41,7 +41,7 @@
 
         <developer>
             <name>Reed von Redwitz</name>
-            <email>reed.vonredwitz@workday.com</email>
+            <email>reed.vonredwitz@star.build</email>
             <roles>
                 <role>architect</role>
                 <role>developer</role>
@@ -50,9 +50,9 @@
     </developers>
 
     <scm>
-        <connection>scm:git:https://github.com/workday/base.build.git</connection>
-        <developerConnection>scm:git:https://github.com/workday/base.build.git</developerConnection>
-        <url>https://github.com/workday/base.build</url>
+        <connection>scm:git:https://github.com/brianoliver/base.build.git</connection>
+        <developerConnection>scm:git:https://github.com/brianoliver/base.build.git</developerConnection>
+        <url>https://github.com/brianoliver/base.build</url>
     </scm>
 
     <properties>
@@ -496,8 +496,10 @@
                 <version>${maven-license-plugin.version}</version>
                 <configuration>
                     <licenseName>apache_v2</licenseName>
-                    <organizationName>${project.organization.name}</organizationName>
+                    <organizationName>The base.build Authors and Contributors</organizationName>
                     <inceptionYear>${project.inceptionYear}</inceptionYear>
+                    <canUpdateCopyright>true</canUpdateCopyright>
+                    <canUpdateLicense>true</canUpdateLicense>
                     <roots>
                         <root>src</root>
                     </roots>

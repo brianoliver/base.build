@@ -2,7 +2,7 @@
 
 ## Codebase Overview
 
-`base` is a **Java 25 multi-module Maven library** (Workday, Inc., Apache 2.0). It is organized into 26 JPMS modules covering configuration, marshalling, JSON transport, reactive flow, composite traversal, retryable operations, telemetry, CLI parsing, I/O, networking, graph algorithms, version parsing, and more. All modules share the `build.base.*` package namespace.
+`base` is a **Java 25 multi-module Maven library** (Apache 2.0). It is organized into 26 JPMS modules covering configuration, marshalling, JSON transport, reactive flow, composite traversal, retryable operations, telemetry, CLI parsing, I/O, networking, graph algorithms, version parsing, and more. All modules share the `build.base.*` package namespace.
 
 **Stack:** Java 25, Maven, JPMS (module system), Jakarta EL 6.0 (native implementation), AssertJ + JUnit 6 (tests).
 **Build:** `./mvnw clean install` | Publishes to **Maven Central** via GitHub Actions (`.github/workflows/release.yml` for releases, `publish-snapshot.yml` for snapshots). Requires GPG signing and `MAVEN_CENTRAL_USERNAME`/`MAVEN_CENTRAL_PASSWORD` secrets.

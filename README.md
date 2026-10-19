@@ -1,7 +1,7 @@
 # base
 A collection of reusable Java 25 JPMS modules covering common infrastructure concerns.
 
-[![CI](https://github.com/Workday/base.build/actions/workflows/main-pull-request.yml/badge.svg)](https://github.com/Workday/base.build/actions/workflows/main-pull-request.yml)
+[![CI](https://github.com/brianoliver/base.build/actions/workflows/main-pull-request.yml/badge.svg)](https://github.com/brianoliver/base.build/actions/workflows/main-pull-request.yml)
 [![Maven Central](https://img.shields.io/maven-central/v/build.base/base-foundation)](https://central.sonatype.com/artifact/build.base/base-foundation)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
